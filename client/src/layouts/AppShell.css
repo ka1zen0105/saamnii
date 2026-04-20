@@ -1,0 +1,36 @@
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  background: #f9fafb;
+}
+
+.app-main {
+  flex: 1;
+  padding: 1.75rem 2rem;
+  overflow: auto;
+}
+
+.app-main h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.375rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.app-main p {
+  margin: 0;
+  color: #6b7280;
+  font-size: 0.9375rem;
+}
+
+:root[data-theme="dark"] .app-shell {
+  background: #0b1220;
+}
+
+:root[data-theme="dark"] .app-main h1 {
+  color: #f3f4f6;
+}
+
+:root[data-theme="dark"] .app-main p {
+  color: #9ca3af;
+}

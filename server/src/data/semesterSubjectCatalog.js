@@ -1,0 +1,35 @@
+export const SEMESTER_SUBJECT_CATALOG = [
+  {
+    semester: 3,
+    subjects: [
+      { code: "BSC12EC05", name: "Signals and Systems" },
+      { code: "PCC12EC05", name: "Electronic Devices" },
+      { code: "PCC12EC06", name: "Computer Organisation and Architecture" },
+      { code: "PCC12EC07", name: "Object Oriented Programming with JAVA Lab" },
+      { code: "MDM01", name: "Law for Engineers" },
+      { code: "OEEC11", name: "Database Management Systems" },
+      { code: "OEEC21", name: "Software Engineering for Web Applications" },
+      { code: "EEM12EC01", name: "Financial Planning, Taxation and Investment" },
+      { code: "VEC12EC01", name: "Human Values and Professional Ethics" },
+      { code: "CEP12EC01", name: "Community Engagement Project" },
+      { code: "LLCXX", name: "One Course from CC" },
+      { code: "PCC11EC03", name: "Digital Electronics" },
+      { code: "PCC11EC01", name: "Innovation and Design Thinking" },
+    ],
+  },
+  {
+    semester: 5,
+    subjects: [
+      { code: "ECC501", name: "Communication Engineering" },
+      { code: "ECC502", name: "Computer Organization and Architecture" },
+      { code: "ECC503", name: "Software Engineering" },
+      { code: "ECC504", name: "Web Technologies" },
+      { code: "ECCDO501", name: "Department Optional (Course - I)" },
+      { code: "ECL501", name: "Communication Engineering Lab" },
+      { code: "ECL502", name: "Software Engineering and Web Technologies Lab" },
+      { code: "ECL503", name: "Department Optional (Course - I) Lab" },
+      { code: "ECL504", name: "Professional Communication and Ethics-II" },
+      { code: "ECM501", name: "Mini project - 2A" },
+    ],
+  },
+];

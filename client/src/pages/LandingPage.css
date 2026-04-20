@@ -1,0 +1,159 @@
+.landing {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 3rem;
+}
+
+.landing-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.landing-logo {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #111827;
+}
+
+.landing-tagline {
+  margin: 0.5rem 0 0;
+  font-size: 0.9375rem;
+  color: #6b7280;
+}
+
+.landing-error {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.375rem;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.landing-error-inline {
+  margin: 0 0 1rem;
+  text-align: left;
+}
+
+.landing-single {
+  display: flex;
+  justify-content: center;
+}
+
+.landing-card-single {
+  width: 100%;
+  max-width: 420px;
+}
+
+.landing-select {
+  cursor: pointer;
+  background-color: #fff;
+}
+
+.landing-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  text-align: left;
+}
+
+.landing-card-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.landing-card-desc {
+  margin: 0 0 1.25rem;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.landing-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.landing-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.landing-input {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  font-size: 0.9375rem;
+  color: #111827;
+}
+
+.landing-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.landing-input:disabled {
+  opacity: 0.6;
+}
+
+.landing-submit {
+  margin-top: 0.25rem;
+  padding: 0.625rem 1rem;
+  border: none;
+  border-radius: 0.375rem;
+  background: #2563eb;
+  color: #fff;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.landing-submit:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.landing-submit:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.landing-submit-secondary {
+  background: #1e40af;
+}
+
+.landing-submit-secondary:hover:not(:disabled) {
+  background: #1e3a8a;
+}
+
+:root[data-theme="dark"] .landing-logo {
+  color: #f3f4f6;
+}
+
+:root[data-theme="dark"] .landing-tagline,
+:root[data-theme="dark"] .landing-card-desc,
+:root[data-theme="dark"] .landing-label {
+  color: #9ca3af;
+}
+
+:root[data-theme="dark"] .landing-card {
+  background: #111827;
+  border-color: #374151;
+}
+
+:root[data-theme="dark"] .landing-card-title {
+  color: #f3f4f6;
+}
+
+:root[data-theme="dark"] .landing-input,
+:root[data-theme="dark"] .landing-select {
+  background: #1f2937;
+  border-color: #4b5563;
+  color: #f3f4f6;
+}
