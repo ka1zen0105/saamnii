@@ -5,9 +5,9 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
-  Scatter,
-  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -133,19 +133,11 @@ function SubjectBandSection({ subject }) {
   const rows = (subject.bands ?? []).map((b) => ({
     band: b.gradeSymbol,
     label: b.label,
-    ISE: b.ise,
+    ISE_TH: b.ise,
+    ISE_TU: b.iseTu ?? 0,
     MSE: b.mse,
     ESE: b.ese,
     Total: b.total,
-  }));
-
-  const scatterRows = rows.map((r, idx) => ({
-    x: idx + 1,
-    label: r.label,
-    ISE: r.ISE,
-    MSE: r.MSE,
-    ESE: r.ESE,
-    Total: r.Total,
   }));
 
   async function handlePng() {
@@ -182,7 +174,7 @@ function SubjectBandSection({ subject }) {
 
       <div ref={captureRef} className="chart-capture">
         <div className="chart-card" style={{ border: "none", marginBottom: "0.75rem" }}>
-          <h2 style={{ fontSize: "0.9rem" }}>Counts by band (grouped)</h2>
+          <h2 style={{ fontSize: "0.9rem" }}>Grouped bar - students per grade band</h2>
           <div className="chart-wrap" style={{ height: 280 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
@@ -194,41 +186,39 @@ function SubjectBandSection({ subject }) {
                 <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
                 <Tooltip />
                 <Legend />
-                <Bar dataKey="ISE" fill="#2563eb" name="ISE" />
-                <Bar dataKey="MSE" fill="#7c3aed" name="MSE" />
-                <Bar dataKey="ESE" fill="#059669" name="ESE" />
-                <Bar dataKey="Total" fill="#d97706" name="Total %" />
+                <Bar dataKey="ISE_TH" fill="#3b82f6" name="ISE-TH" />
+                <Bar dataKey="ISE_TU" fill="#fb923c" name="ISE-TU" />
+                <Bar dataKey="MSE" fill="#a3a3a3" name="MSE" />
+                <Bar dataKey="ESE" fill="#facc15" name="ESE" />
+                <Bar dataKey="Total" fill="#60a5fa" name="Total" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         <div className="chart-card" style={{ border: "none", marginBottom: 0 }}>
-          <h2 style={{ fontSize: "0.9rem" }}>Scatter plot by band</h2>
+          <h2 style={{ fontSize: "0.9rem" }}>Scatter / line - component comparison</h2>
           <div className="chart-wrap" style={{ height: 240 }}>
             <ResponsiveContainer width="100%" height="100%">
-              <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+              <LineChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis
-                  type="number"
-                  dataKey="x"
+                  dataKey="band"
                   tick={{ fontSize: 11 }}
-                  domain={[1, 8]}
-                  allowDecimals={false}
-                  label={{ value: "Range of Percentage Marks", position: "insideBottom", offset: -4 }}
                 />
                 <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
                 <Tooltip
                   cursor={{ strokeDasharray: "3 3" }}
-                  formatter={(value, key, payload) => [value, key]}
-                  labelFormatter={(_, payload) => payload?.[0]?.payload?.label || ""}
+                  formatter={(value, key) => [value, key]}
+                  labelFormatter={(label, payload) => payload?.[0]?.payload?.label || label}
                 />
                 <Legend />
-                <Scatter data={scatterRows} dataKey="ISE" name="ISE" fill="#2563eb" />
-                <Scatter data={scatterRows} dataKey="MSE" name="MSE" fill="#f97316" />
-                <Scatter data={scatterRows} dataKey="ESE" name="ESE" fill="#64748b" />
-                <Scatter data={scatterRows} dataKey="Total" name="Total %" fill="#eab308" />
-              </ScatterChart>
+                <Line type="monotone" dataKey="ISE_TH" name="ISE-TH" stroke="#3b82f6" dot />
+                <Line type="monotone" dataKey="ISE_TU" name="ISE-TU" stroke="#fb923c" dot />
+                <Line type="monotone" dataKey="MSE" name="MSE" stroke="#a3a3a3" dot />
+                <Line type="monotone" dataKey="ESE" name="ESE" stroke="#facc15" dot />
+                <Line type="monotone" dataKey="Total" name="Total" stroke="#60a5fa" dot />
+              </LineChart>
             </ResponsiveContainer>
           </div>
         </div>

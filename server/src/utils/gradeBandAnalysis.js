@@ -22,6 +22,9 @@ export const DEFAULT_ESE_MAX = 30;
 /** Default max marks for MSE when `subject.mse` is present. */
 export const DEFAULT_MSE_MAX = 10;
 
+/** Default max marks for second internal/practical component (`ise2`/`iseTu`). */
+export const DEFAULT_ISE2_MAX = 20;
+
 /**
  * Maps a percentage to a band index in `BAND_DEFINITIONS`, or null if unknown.
  * @param {number | null | undefined} pct
@@ -72,6 +75,25 @@ export function subjectMsePercent(subject) {
     subject?.mseMax != null && Number.isFinite(Number(subject.mseMax))
       ? Number(subject.mseMax)
       : DEFAULT_MSE_MAX;
+  if (max <= 0) return null;
+  return (marks / max) * 100;
+}
+
+/**
+ * ISE-TU% / ISE2% when `subject.ise2` is present: (ise2 / ise2Max) * 100.
+ * @param {Record<string, unknown>} subject
+ * @returns {number | null}
+ */
+export function subjectIse2Percent(subject) {
+  if (subject?.ise2 === undefined || subject?.ise2 === null || subject?.ise2 === "") {
+    return null;
+  }
+  const marks = Number(subject.ise2);
+  if (!Number.isFinite(marks)) return null;
+  const max =
+    subject?.ise2Max != null && Number.isFinite(Number(subject.ise2Max))
+      ? Number(subject.ise2Max)
+      : DEFAULT_ISE2_MAX;
   if (max <= 0) return null;
   return (marks / max) * 100;
 }
@@ -151,6 +173,7 @@ function emptyBandRows() {
     label: def.label,
     gradeSymbol: def.gradeSymbol,
     ise: 0,
+    iseTu: 0,
     mse: 0,
     ese: 0,
     total: 0,
@@ -172,7 +195,7 @@ function normalizeSubjectCode(code) {
  * @returns {Array<{
  *   subjectCode: string,
  *   subjectName: string,
- *   bands: Array<{ label: string, gradeSymbol: string, ise: number, mse: number, ese: number, total: number }>
+ *   bands: Array<{ label: string, gradeSymbol: string, ise: number, iseTu: number, mse: number, ese: number, total: number }>
  * }>}
  */
 export function computeGradeBands(students) {
@@ -203,11 +226,13 @@ export function computeGradeBands(students) {
       }
 
       const i = bandIndexForPercentage(subjectIsePercent(subject));
+      const i2 = bandIndexForPercentage(subjectIse2Percent(subject));
       const m = bandIndexForPercentage(subjectMsePercent(subject));
       const e = bandIndexForPercentage(subjectEsePercent(subject));
       const t = bandIndexForPercentage(subjectTotalPercent(subject));
 
       if (i !== null) entry.bands[i].ise += 1;
+      if (i2 !== null) entry.bands[i2].iseTu += 1;
       if (m !== null) entry.bands[m].mse += 1;
       if (e !== null) entry.bands[e].ese += 1;
       if (t !== null) entry.bands[t].total += 1;

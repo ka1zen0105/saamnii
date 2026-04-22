@@ -40,7 +40,8 @@ function filterSubjectsByRole(req, subjects) {
   const subs = Array.isArray(subjects) ? subjects : [];
   if (req.user?.role !== "faculty") return subs;
   const allow = allowedSubjectSet(req);
-  if (allow.size === 0) return [];
+  // Empty subjectCodes means no restriction (e.g. email-based mentor login).
+  if (allow.size === 0) return subs;
   return subs.filter((sub) => allow.has(trimStr(sub?.code)));
 }
 

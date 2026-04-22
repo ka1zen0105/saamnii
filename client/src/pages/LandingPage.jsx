@@ -6,8 +6,7 @@ import "./LandingPage.css";
 export function LandingPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [role, setRole] = useState("faculty");
-  const [userId, setUserId] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -15,8 +14,8 @@ export function LandingPage() {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-    if (!userId.trim()) {
-      setError("Enter your user id.");
+    if (!email.trim()) {
+      setError("Enter your email.");
       return;
     }
     if (!password) {
@@ -25,10 +24,11 @@ export function LandingPage() {
     }
     setLoading(true);
     try {
-      await login(userId.trim(), role, password);
-      navigate(role === "admin" ? "/admin/dashboard" : "/faculty/dashboard", {
-        replace: true,
-      });
+      const auth = await login(email.trim(), password);
+      navigate(
+        auth?.user?.role === "admin" ? "/admin/dashboard" : "/faculty/dashboard",
+        { replace: true }
+      );
     } catch (err) {
       setError(
         err?.response?.data?.message ||
@@ -51,7 +51,7 @@ export function LandingPage() {
         <article className="landing-card landing-card-single">
           <h2 className="landing-card-title">Sign in</h2>
           <p className="landing-card-desc">
-            Choose your role, then enter your user id and password.
+            Enter your mentor email and password.
           </p>
 
           {error ? (
@@ -61,32 +61,18 @@ export function LandingPage() {
           ) : null}
 
           <form onSubmit={handleSubmit} className="landing-form">
-            <label className="landing-label" htmlFor="login-role">
-              Role
-            </label>
-            <select
-              id="login-role"
-              className="landing-input landing-select"
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-              disabled={loading}
-            >
-              <option value="faculty">Faculty</option>
-              <option value="admin">Admin / HOD</option>
-            </select>
-
-            <label className="landing-label" htmlFor="login-userId">
-              User id
+            <label className="landing-label" htmlFor="login-email">
+              Email
             </label>
             <input
-              id="login-userId"
+              id="login-email"
               className="landing-input"
-              type="text"
-              autoComplete="username"
-              value={userId}
-              onChange={(e) => setUserId(e.target.value)}
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               disabled={loading}
-              placeholder={role === "admin" ? "Admin id" : "Faculty id"}
+              placeholder="name@college.edu"
             />
 
             <label className="landing-label" htmlFor="login-password">

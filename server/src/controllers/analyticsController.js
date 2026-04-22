@@ -92,7 +92,8 @@ async function loadScopedStudents(req) {
   if (req.user?.role !== "faculty") return students;
 
   const allowed = subjectCodeSetFromUser(req.user);
-  if (allowed.size === 0) return [];
+  // Empty subjectCodes means no restriction (e.g. email-based mentor login).
+  if (allowed.size === 0) return students;
 
   const scoped = [];
   for (const s of students) {

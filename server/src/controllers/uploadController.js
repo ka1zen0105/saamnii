@@ -165,6 +165,14 @@ function normalizeText(v) {
     .replace(/[^A-Z0-9]+/g, "");
 }
 
+function isMongoTxnUnsupported(err) {
+  const msg = String(err?.message || "");
+  return (
+    err?.code === 20 ||
+    /Transaction numbers are only allowed on a replica set member or mongos/i.test(msg)
+  );
+}
+
 function isContineoMatrixHeaderRow(row) {
   const need = ["SLNO", "USN", "ROLLNO", "NAME"];
   const got = new Set((Array.isArray(row) ? row : []).map((x) => normalizeText(x)));
@@ -559,6 +567,42 @@ export async function uploadSpreadsheet(req, res, next) {
         });
       });
     } catch (err) {
+      if (isMongoTxnUnsupported(err)) {
+        // Local standalone MongoDB does not support transactions.
+        try {
+          const createdUpload = await Upload.create(uploadDoc);
+          try {
+            await Student.insertMany(studentsPayload, { ordered: true });
+          } catch (insertErr) {
+            await Upload.deleteOne({ _id: createdUpload._id });
+            throw insertErr;
+          }
+          return res.status(201).json({
+            uploadId,
+            rowCount,
+            subjectsFound,
+          });
+        } catch (fallbackErr) {
+          console.error("[upload] Non-transaction fallback failed:", fallbackErr);
+          if (fallbackErr?.code === 11000) {
+            return res.status(409).json({
+              error: "Conflict",
+              message: "Upload id or related unique constraint conflict. Retry the upload.",
+            });
+          }
+          if (fallbackErr?.name === "ValidationError") {
+            return res.status(400).json({
+              error: "Validation Error",
+              message: fallbackErr.message || "Student or upload data failed validation.",
+            });
+          }
+          return res.status(500).json({
+            error: "Internal Server Error",
+            message: "Failed to persist upload data.",
+          });
+        }
+      }
+
       console.error("[upload] Transaction failed:", err);
       if (err?.code === 11000) {
         return res.status(409).json({

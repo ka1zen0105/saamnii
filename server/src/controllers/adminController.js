@@ -6,6 +6,7 @@ import { User } from "../models/User.js";
 import { Settings } from "../models/Settings.js";
 import { SchoolClass } from "../models/SchoolClass.js";
 import { SEMESTER_SUBJECT_CATALOG } from "../data/semesterSubjectCatalog.js";
+import { SE_ECS_FACULTY } from "../data/seEcsFaculty.js";
 import {
   computeGradeBands,
   subjectTotalPercent,
@@ -43,6 +44,41 @@ function avg(nums) {
   const a = nums.filter((n) => n != null && Number.isFinite(n));
   if (!a.length) return null;
   return a.reduce((x, y) => x + y, 0) / a.length;
+}
+
+function mentorUserId(row) {
+  const email = trim(row?.email).toLowerCase();
+  if (email) return email;
+  const contact = trim(row?.contact);
+  if (contact) return `mentor-${contact}`;
+  return `mentor-${trim(row?.name).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+async function ensureMentorFacultyUsers() {
+  if (!Array.isArray(SE_ECS_FACULTY) || SE_ECS_FACULTY.length === 0) return;
+  const ops = SE_ECS_FACULTY.map((row) => {
+    const userId = mentorUserId(row);
+    return {
+      updateOne: {
+        filter: { userId, role: "faculty" },
+        update: {
+          $set: {
+            role: "faculty",
+            displayLabel: trim(row?.name),
+            email: trim(row?.email).toLowerCase(),
+            contact: trim(row?.contact),
+          },
+          $setOnInsert: {
+            subjectCodes: [],
+            semesterSubjectAssignments: [],
+            assignedClasses: [],
+          },
+        },
+        upsert: true,
+      },
+    };
+  });
+  await User.bulkWrite(ops);
 }
 
 function buildStudentQuery(req) {
@@ -408,6 +444,7 @@ export async function patchFacultyClasses(req, res, next) {
 
 export async function listFaculty(req, res, next) {
   try {
+    await ensureMentorFacultyUsers();
     const users = await User.find({ role: "faculty" })
       .select(
         "userId displayLabel email contact subjectCodes semesterSubjectAssignments assignedClasses"

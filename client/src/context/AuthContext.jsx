@@ -20,6 +20,9 @@ function decodeJwtPayload(token) {
     return {
       userId: data.userId ?? data.sub,
       role: data.role,
+      email: data.email ?? null,
+      name: data.name ?? null,
+      contact: data.contact ?? null,
       subjectCodes: Array.isArray(data.subjectCodes) ? data.subjectCodes : [],
       assignedClasses: Array.isArray(data.assignedClasses)
         ? data.assignedClasses
@@ -51,9 +54,9 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [state, setState] = useState(() => loadStored());
 
-  const login = useCallback(async (userId, role, password) => {
+  const login = useCallback(async (email, password) => {
     try {
-      const { data } = await api.post("/api/auth/login", { userId, role, password });
+      const { data } = await api.post("/api/auth/login", { email, password });
       const token = data?.token;
       if (!token || typeof token !== "string") {
         throw new Error("No token in response");

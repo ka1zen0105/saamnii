@@ -1,6 +1,5 @@
-import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { User } from "../models/User.js";
+import { SE_ECS_FACULTY } from "../data/seEcsFaculty.js";
 
 function unauthorized(res) {
   return res.status(401).json({
@@ -9,48 +8,31 @@ function unauthorized(res) {
   });
 }
 
-function normalizedUniqueSubjectCodes(user) {
-  const out = new Set();
-  const top = Array.isArray(user?.subjectCodes) ? user.subjectCodes : [];
-  for (const code of top) {
-    const c = String(code ?? "").trim();
-    if (c) out.add(c);
-  }
-  const semRows = Array.isArray(user?.semesterSubjectAssignments)
-    ? user.semesterSubjectAssignments
+function getAdminEmails() {
+  const raw = process.env.ADMIN_EMAILS;
+  const configured = raw
+    ? String(raw)
+        .split(",")
+        .map((v) => v.trim().toLowerCase())
+        .filter(Boolean)
     : [];
-  for (const row of semRows) {
-    const list = Array.isArray(row?.subjectCodes) ? row.subjectCodes : [];
-    for (const code of list) {
-      const c = String(code ?? "").trim();
-      if (c) out.add(c);
-    }
-  }
-  return Array.from(out);
+  if (configured.length > 0) return configured;
+  return ["admin@frcrce.ac.in"];
 }
 
 /**
  * POST /api/auth/login
- * Body: { userId, role: "admin" | "faculty", password }
+ * Body: { email, password }
  */
 export async function login(req, res, next) {
   try {
-    const { userId, role, password } = req.body ?? {};
+    const { email, password } = req.body ?? {};
 
     if (
-      userId === undefined ||
-      userId === null ||
-      typeof userId !== "string" ||
-      !userId.trim()
-    ) {
-      return unauthorized(res);
-    }
-
-    if (
-      role === undefined ||
-      role === null ||
-      typeof role !== "string" ||
-      !role.trim()
+      email === undefined ||
+      email === null ||
+      typeof email !== "string" ||
+      !email.trim()
     ) {
       return unauthorized(res);
     }
@@ -59,8 +41,7 @@ export async function login(req, res, next) {
       return unauthorized(res);
     }
 
-    const uid = userId.trim();
-    const roleNorm = role.trim().toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase();
 
     const secret = process.env.JWT_SECRET;
     if (!secret) {
@@ -71,74 +52,50 @@ export async function login(req, res, next) {
       });
     }
 
-    if (roleNorm === "admin") {
-      const adminId = process.env.ADMIN_ID;
-      if (!adminId || uid !== String(adminId).trim()) {
-        return unauthorized(res);
-      }
+    if (password !== "teacher123") {
+      return unauthorized(res);
+    }
 
-      const adminPassHash = process.env.ADMIN_PASSWORD_HASH;
-      const adminPassPlain = process.env.ADMIN_PASSWORD;
-
-      let passwordOk = false;
-      if (adminPassHash && String(adminPassHash).trim()) {
-        passwordOk = await bcrypt.compare(password, String(adminPassHash).trim());
-      } else if (adminPassPlain != null && String(adminPassPlain).length > 0) {
-        passwordOk = password === String(adminPassPlain);
-      } else {
-        return res.status(500).json({
-          message:
-            "Admin password not configured. Set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH in .env.",
-        });
-      }
-
-      if (!passwordOk) {
-        return unauthorized(res);
-      }
-
+    const adminEmails = getAdminEmails();
+    if (adminEmails.includes(normalizedEmail)) {
       const payload = {
-        userId: uid,
+        userId: normalizedEmail,
         role: "admin",
         subjectCodes: [],
         assignedClasses: [],
+        name: "Admin",
+        email: normalizedEmail,
+        contact: null,
       };
-
       const token = jwt.sign(payload, secret, { expiresIn: "7d" });
-      return res.json({ token });
-    }
-
-    if (roleNorm === "faculty") {
-      const user = await User.findOne({ userId: uid, role: "faculty" }).select(
-        "+passwordHash"
-      );
-
-      if (!user?.passwordHash) {
-        return unauthorized(res);
-      }
-
-      const passwordOk = await bcrypt.compare(password, user.passwordHash);
-      if (!passwordOk) {
-        return unauthorized(res);
-      }
-
-      const payload = {
-        userId: user.userId,
-        role: "faculty",
-        subjectCodes: normalizedUniqueSubjectCodes(user),
-        assignedClasses: Array.isArray(user.assignedClasses)
-          ? user.assignedClasses
-          : [],
-      };
-
-      const token = jwt.sign(payload, secret, { expiresIn: "7d" });
-
       return res.json({
         token,
         user: payload,
       });
     }
 
-    return unauthorized(res);
+    const mentor = SE_ECS_FACULTY.find(
+      (item) => item?.email && String(item.email).trim().toLowerCase() === normalizedEmail
+    );
+    if (!mentor) {
+      return unauthorized(res);
+    }
+
+    const payload = {
+      userId: normalizedEmail,
+      role: "faculty",
+      subjectCodes: [],
+      assignedClasses: [],
+      name: mentor.name,
+      email: mentor.email,
+      contact: mentor.contact,
+    };
+
+    const token = jwt.sign(payload, secret, { expiresIn: "7d" });
+    return res.json({
+      token,
+      user: payload,
+    });
   } catch (err) {
     next(err);
   }
