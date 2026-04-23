@@ -7,8 +7,11 @@ const router = Router();
 router.use(verifyToken, requireAdmin);
 
 router.get("/meta", admin.getAdminMeta);
+router.get("/faculty-o-grade-distribution", admin.getFacultyOGradeDistribution);
 router.get("/semester-subject-catalog", admin.getSemesterSubjectCatalog);
 router.get("/dashboard", admin.getAdminDashboard);
+router.get("/exam-updates", admin.getExamUpdates);
+router.post("/exam-updates", admin.createExamUpdate);
 router.get("/settings", admin.getSettings);
 router.patch("/settings", admin.patchSettings);
 router.get("/review-rows", admin.getReviewRows);
@@ -17,6 +20,7 @@ router.get("/grade-bands-pooled", admin.getGradeBandsPooled);
 router.get("/grade-bands-xlsx", admin.getGradeBandsXlsx);
 
 router.get("/faculty", admin.listFaculty);
+router.get("/faculty/:userId/uploads", admin.listFacultyUploads);
 router.post("/faculty", admin.createFaculty);
 router.patch("/faculty/:userId/subjects", admin.patchFacultySubjects);
 router.patch(

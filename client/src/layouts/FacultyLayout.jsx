@@ -1,5 +1,6 @@
 import { Outlet, useNavigate } from "react-router-dom";
 import { Sidebar } from "../components/Sidebar.jsx";
+import { InternalHelpChatbot } from "../components/InternalHelpChatbot.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import "./AppShell.css";
 
@@ -26,6 +27,7 @@ export function FacultyLayout() {
       <main className="app-main">
         <Outlet />
       </main>
+      <InternalHelpChatbot role="faculty" />
     </div>
   );
 }

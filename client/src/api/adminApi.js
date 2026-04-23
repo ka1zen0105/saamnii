@@ -1,7 +1,17 @@
 import { api } from "./index.js";
 
-export async function fetchAdminDashboard() {
-  const { data } = await api.get("/api/admin/dashboard");
+export async function fetchAdminDashboard(params) {
+  const { data } = await api.get("/api/admin/dashboard", { params });
+  return data;
+}
+
+export async function fetchAdminExamUpdates() {
+  const { data } = await api.get("/api/admin/exam-updates");
+  return data?.updates ?? [];
+}
+
+export async function createAdminExamUpdate(message) {
+  const { data } = await api.post("/api/admin/exam-updates", { message });
   return data;
 }
 
@@ -15,9 +25,14 @@ export async function patchAdminSettings(body) {
   return data;
 }
 
-export async function fetchAdminMeta() {
-  const { data } = await api.get("/api/admin/meta");
+export async function fetchAdminMeta(params) {
+  const { data } = await api.get("/api/admin/meta", { params });
   return data;
+}
+
+export async function fetchFacultyOGradeDistribution(params) {
+  const { data } = await api.get("/api/admin/faculty-o-grade-distribution", { params });
+  return data?.distribution ?? [];
 }
 
 export async function fetchSemesterSubjectCatalog() {
@@ -107,4 +122,9 @@ export async function patchClassCurriculum(classLabel, subjectsText) {
     { subjectsText }
   );
   return data;
+}
+
+export async function listFacultyUploadsForAdmin(userId) {
+  const { data } = await api.get(`/api/admin/faculty/${encodeURIComponent(userId)}/uploads`);
+  return data?.uploads ?? [];
 }

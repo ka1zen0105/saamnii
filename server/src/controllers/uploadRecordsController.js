@@ -94,6 +94,7 @@ export async function getUploadRecords(req, res, next) {
         rows.push({
           name: s.name ?? "",
           roll: formatIdentifier(s.prn ?? s.seatNo ?? ""),
+          semester: s.semester ?? null,
           classLabel: s.classLabel ?? "",
           subject: sub.name ?? sub.code ?? "",
           subjectCode: sub.code ?? "",

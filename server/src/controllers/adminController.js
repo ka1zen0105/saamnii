@@ -46,6 +46,19 @@ function avg(nums) {
   return a.reduce((x, y) => x + y, 0) / a.length;
 }
 
+function gradeFromPercentage(pct) {
+  if (!Number.isFinite(Number(pct))) return "";
+  const p = Number(pct);
+  if (p >= 85) return "O";
+  if (p >= 80) return "A";
+  if (p >= 70) return "B";
+  if (p >= 60) return "C";
+  if (p >= 50) return "D";
+  if (p >= 45) return "E";
+  if (p >= 40) return "P";
+  return "F";
+}
+
 function mentorUserId(row) {
   const email = trim(row?.email).toLowerCase();
   if (email) return email;
@@ -84,6 +97,7 @@ async function ensureMentorFacultyUsers() {
 function buildStudentQuery(req) {
   const classLabel = trim(req.query.classLabel);
   const subjectCode = trim(req.query.subjectCode);
+  const facultyId = trim(req.query.facultyId);
   const semester = req.query.semester;
   /** @type {Record<string, unknown>} */
   const q = {};
@@ -94,6 +108,18 @@ function buildStudentQuery(req) {
   if (subjectCode) {
     q["subjects.code"] = subjectCode;
   }
+  if (facultyId) {
+    q.uploadId = { $in: [] };
+  }
+  return q;
+}
+
+async function applyFacultyScopeToQuery(q, req) {
+  const facultyId = trim(req.query.facultyId);
+  if (!facultyId) return q;
+  const uploads = await Upload.find({ facultyId }).select("uploadId").lean();
+  const uploadIds = uploads.map((u) => trim(u?.uploadId)).filter(Boolean);
+  q.uploadId = uploadIds.length ? { $in: uploadIds } : { $in: [] };
   return q;
 }
 
@@ -102,12 +128,14 @@ function buildStudentQuery(req) {
  */
 export async function getAdminDashboard(req, res, next) {
   try {
+    const q = await applyFacultyScopeToQuery(buildStudentQuery(req), req);
+    const subjectCodeFilter = trim(req.query.subjectCode);
     const [totalStudents, settings] = await Promise.all([
-      Student.countDocuments(),
+      Student.countDocuments(q),
       Settings.findById("app").lean(),
     ]);
 
-    const students = await Student.find().lean();
+    const students = await Student.find(q).lean();
     let recordRows = 0;
     const subjectKeySet = new Set();
     for (const s of students) {
@@ -131,9 +159,14 @@ export async function getAdminDashboard(req, res, next) {
       if (s.sgpa != null && Number.isFinite(Number(s.sgpa))) {
         sgpaVals.push(Number(s.sgpa));
       }
-      const subs = s.subjects || [];
-      for (const sub of subs) {
-        const g = String(sub.grade ?? "").trim().toUpperCase() || "(blank)";
+      if (subjectCodeFilter) {
+        const subs = (s.subjects || []).filter((sub) => trim(sub?.code) === subjectCodeFilter);
+        for (const sub of subs) {
+          const g = gradeFromPercentage(subjectTotalPercent(sub)) || "(blank)";
+          gradeDistribution[g] = (gradeDistribution[g] ?? 0) + 1;
+        }
+      } else {
+        const g = gradeFromPercentage(s.percentage) || "(blank)";
         gradeDistribution[g] = (gradeDistribution[g] ?? 0) + 1;
       }
     }
@@ -163,6 +196,13 @@ export async function getAdminDashboard(req, res, next) {
       });
     }
 
+    const publishedUpdates = Array.isArray(settings?.examUpdates)
+      ? settings.examUpdates
+          .filter((u) => u?.published && String(u?.message || "").trim())
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+          .slice(0, 10)
+      : [];
+
     return res.json({
       stats: {
         totalStudents,
@@ -176,7 +216,61 @@ export async function getAdminDashboard(req, res, next) {
       passFailBySubject,
       performanceTrend,
       publishResults: Boolean(settings?.publishResults),
+      examUpdates: publishedUpdates,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/admin/exam-updates
+ */
+export async function getExamUpdates(req, res, next) {
+  try {
+    const settings = await Settings.findById("app").lean();
+    const updates = Array.isArray(settings?.examUpdates)
+      ? settings.examUpdates
+          .filter((u) => u?.published && String(u?.message || "").trim())
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      : [];
+    return res.json({ updates });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/admin/exam-updates
+ * Body: { message: string }
+ */
+export async function createExamUpdate(req, res, next) {
+  try {
+    const message = trim(req.body?.message);
+    if (!message) {
+      return res.status(400).json({ message: "message is required" });
+    }
+
+    const nextUpdate = {
+      message,
+      published: true,
+      createdAt: new Date(),
+      createdBy: trim(req.user?.userId) || "admin",
+    };
+
+    const doc = await Settings.findByIdAndUpdate(
+      "app",
+      { $push: { examUpdates: { $each: [nextUpdate], $slice: -100 } } },
+      { new: true, upsert: true }
+    ).lean();
+
+    const updates = Array.isArray(doc?.examUpdates)
+      ? doc.examUpdates
+          .filter((u) => u?.published && String(u?.message || "").trim())
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      : [];
+
+    return res.status(201).json({ ok: true, updates });
   } catch (err) {
     next(err);
   }
@@ -245,7 +339,7 @@ export async function patchSettings(req, res, next) {
  */
 export async function getReviewRows(req, res, next) {
   try {
-    const q = buildStudentQuery(req);
+    const q = await applyFacultyScopeToQuery(buildStudentQuery(req), req);
     const students = await Student.find(q).lean();
     const rows = [];
     for (const s of students) {
@@ -300,7 +394,7 @@ export async function deleteAllMarks(req, res, next) {
  */
 export async function getGradeBandsPooled(req, res, next) {
   try {
-    const q = buildStudentQuery(req);
+    const q = await applyFacultyScopeToQuery(buildStudentQuery(req), req);
     const students = await Student.find(q).lean();
     const perSubject = computeGradeBands(students);
     if (!perSubject.length) {
@@ -355,7 +449,7 @@ function computePooledBandsInline(students) {
  */
 export async function getGradeBandsXlsx(req, res, next) {
   try {
-    const q = buildStudentQuery(req);
+    const q = await applyFacultyScopeToQuery(buildStudentQuery(req), req);
     const students = await Student.find(q).lean();
     const perSubject = computeGradeBands(students);
     const pooledBands = computePooledBandsInline(students);
@@ -407,12 +501,107 @@ export async function getGradeBandsXlsx(req, res, next) {
 
 export async function getAdminMeta(req, res, next) {
   try {
-    const classes = await Student.distinct("classLabel");
-    const subjectCodes = await Student.distinct("subjects.code");
+    const q = await applyFacultyScopeToQuery({}, req);
+    const classes = await Student.distinct("classLabel", q);
+    const subjectCodes = await Student.distinct("subjects.code", q);
     return res.json({
       classes: classes.filter(Boolean).sort(),
       subjectCodes: subjectCodes.filter(Boolean).sort(),
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/admin/faculty-o-grade-distribution?classLabel=&semester=&subjectCode=
+ * Returns faculty-wise O-grade percentage in current class/semester/subject scope.
+ */
+export async function getFacultyOGradeDistribution(req, res, next) {
+  try {
+    const classLabel = trim(req.query.classLabel);
+    const subjectCode = trim(req.query.subjectCode);
+    const semesterRaw = req.query.semester;
+    const semester =
+      semesterRaw !== undefined && semesterRaw !== "" && Number.isFinite(Number(semesterRaw))
+        ? Number(semesterRaw)
+        : undefined;
+
+    const studentMatch = {};
+    if (classLabel) studentMatch.classLabel = classLabel;
+    if (semester !== undefined) studentMatch.semester = semester;
+
+    const pipeline = [
+      { $match: studentMatch },
+      { $unwind: "$subjects" },
+      ...(subjectCode ? [{ $match: { "subjects.code": subjectCode } }] : []),
+      {
+        $lookup: {
+          from: "uploads",
+          localField: "uploadId",
+          foreignField: "uploadId",
+          as: "upload",
+        },
+      },
+      { $unwind: "$upload" },
+      {
+        $group: {
+          _id: "$upload.facultyId",
+          total: { $sum: 1 },
+          oCount: {
+            $sum: {
+              $cond: [
+                {
+                  $regexMatch: {
+                    input: { $toUpper: { $trim: { input: { $ifNull: ["$subjects.grade", ""] } } } },
+                    regex: "^O$",
+                  },
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          facultyId: "$_id",
+          total: 1,
+          oCount: 1,
+          oPercentage: {
+            $cond: [
+              { $gt: ["$total", 0] },
+              { $multiply: [{ $divide: ["$oCount", "$total"] }, 100] },
+              0,
+            ],
+          },
+        },
+      },
+      { $sort: { oPercentage: -1 } },
+    ];
+
+    const rows = await Student.aggregate(pipeline);
+    const facultyIds = rows.map((r) => r.facultyId).filter(Boolean);
+    const users = facultyIds.length
+      ? await User.find({ role: "faculty", userId: { $in: facultyIds } })
+          .select("userId displayLabel")
+          .lean()
+      : [];
+    const labelByUserId = new Map(
+      users.map((u) => [u.userId, u.displayLabel || u.userId])
+    );
+
+    const distribution = rows.map((r) => ({
+      facultyId: r.facultyId,
+      facultyLabel: labelByUserId.get(r.facultyId) || r.facultyId,
+      total: r.total,
+      oCount: r.oCount,
+      oPercentage: Math.round(Number(r.oPercentage || 0) * 100) / 100,
+    }));
+
+    return res.json({ distribution });
   } catch (err) {
     next(err);
   }
@@ -564,6 +753,22 @@ export async function listClasses(req, res, next) {
   try {
     const list = await SchoolClass.find().sort({ classLabel: 1 }).lean();
     return res.json(list);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listFacultyUploads(req, res, next) {
+  try {
+    const userId = trim(req.params?.userId);
+    if (!userId) {
+      return res.status(400).json({ message: "userId required" });
+    }
+    const uploads = await Upload.find({ facultyId: userId })
+      .select("uploadId classLabel createdAt rowCount")
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.json({ uploads });
   } catch (err) {
     next(err);
   }

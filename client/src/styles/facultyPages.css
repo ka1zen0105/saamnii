@@ -134,6 +134,7 @@
   text-align: left;
   border-bottom: 1px solid #f3f4f6;
   white-space: nowrap;
+  vertical-align: middle;
 }
 
 .data-table th {
@@ -142,6 +143,15 @@
   color: #3a5270;
   position: sticky;
   top: 0;
+  z-index: 1;
+}
+
+.data-table tbody tr:nth-child(even) {
+  background: #fbfdff;
+}
+
+.data-table tbody tr:hover {
+  background: #f3f8ff;
 }
 
 .insights {

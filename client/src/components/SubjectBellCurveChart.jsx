@@ -64,7 +64,15 @@ function buildHistogram(percentages, binWidth) {
   return bins;
 }
 
-export function SubjectBellCurveChart({ parsedData }) {
+function canonicalSubjectCode(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  const firstToken = firstLine.split(/\s+/)[0].trim();
+  return firstToken.toUpperCase();
+}
+
+export function SubjectBellCurveChart({ parsedData, preferredSubjectCode = "" }) {
   const subjectOptions = useMemo(() => Object.keys(parsedData ?? {}), [parsedData]);
   const [subject, setSubject] = useState(subjectOptions[0] || "");
   const [component, setComponent] = useState("");
@@ -80,6 +88,16 @@ export function SubjectBellCurveChart({ parsedData }) {
       setSubject(subjectOptions[0]);
     }
   }, [subject, subjectOptions]);
+
+  useEffect(() => {
+    const preferred = canonicalSubjectCode(preferredSubjectCode);
+    if (!preferred || !subjectOptions.length) return;
+    const match = subjectOptions.find((s) => {
+      const codePart = String(s).split("—")[0]?.trim() ?? "";
+      return canonicalSubjectCode(codePart) === preferred;
+    });
+    if (match) setSubject(match);
+  }, [preferredSubjectCode, subjectOptions]);
 
   useEffect(() => {
     if ((!component || !componentOptions.includes(component)) && componentOptions.length) {

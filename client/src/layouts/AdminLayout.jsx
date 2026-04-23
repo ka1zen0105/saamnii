@@ -1,13 +1,13 @@
 import { Outlet, useNavigate } from "react-router-dom";
 import { Sidebar } from "../components/Sidebar.jsx";
+import { InternalHelpChatbot } from "../components/InternalHelpChatbot.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import "./AppShell.css";
 
 const LINKS = [
   { to: "/admin/dashboard", label: "Dashboard" },
-  { to: "/admin/review-marks", label: "Review marks" },
+  { to: "/admin/analysis-of-students", label: "Grade Band" },
   { to: "/admin/analytics", label: "Analytics" },
-  { to: "/admin/grade-bands", label: "Grade bands" },
   { to: "/admin/faculty-access", label: "Faculty access" },
 ];
 
@@ -26,6 +26,7 @@ export function AdminLayout() {
       <main className="app-main">
         <Outlet />
       </main>
+      <InternalHelpChatbot role="admin" />
     </div>
   );
 }

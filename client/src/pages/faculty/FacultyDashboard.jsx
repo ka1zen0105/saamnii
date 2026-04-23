@@ -12,11 +12,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Link } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext.jsx";
 import {
   fetchBellCurve,
   fetchDashboard,
+  fetchExamUpdates,
   fetchExamProgression,
   fetchMyUploads,
 } from "../../api/analyticsApi.js";
@@ -42,6 +42,7 @@ export function FacultyDashboard() {
   const [bellData, setBellData] = useState([]);
   const [uploads, setUploads] = useState([]);
   const [profile, setProfile] = useState(null);
+  const [updates, setUpdates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
@@ -55,22 +56,25 @@ export function FacultyDashboard() {
     setErr("");
     setLoading(true);
     try {
-      const [dash, prog, myUploads, myProfile] = await Promise.all([
+      const [dash, prog, myUploads, myProfile, examUpdates] = await Promise.all([
         fetchDashboard(queryParams),
         fetchExamProgression(queryParams),
         fetchMyUploads(),
         fetchMyProfile(),
+        fetchExamUpdates(),
       ]);
       setDashboard(dash);
       setProgression(Array.isArray(prog) ? prog : []);
       setUploads(Array.isArray(myUploads) ? myUploads : []);
       setProfile(myProfile || null);
+      setUpdates(Array.isArray(examUpdates) ? examUpdates : []);
     } catch (e) {
       setErr(e?.response?.data?.message || e.message || "Failed to load dashboard.");
       setDashboard(null);
       setProgression([]);
       setUploads([]);
       setProfile(null);
+      setUpdates([]);
     } finally {
       setLoading(false);
     }
@@ -121,10 +125,6 @@ export function FacultyDashboard() {
   const statFail = dashboard?.failCount ?? 0;
   const statPassRate = dashboard
     ? `${Math.round((dashboard.passRate ?? 0) * 10000) / 100}%`
-    : "—";
-  const latestUpload = uploads[0] || null;
-  const latestUploadAt = latestUpload?.createdAt
-    ? new Date(latestUpload.createdAt).toLocaleString()
     : "—";
   const assignedClasses = profile?.assignedClasses?.length || classes.length || 0;
   const assignedSubjects = profile?.subjectCodes?.length || 0;
@@ -227,39 +227,16 @@ export function FacultyDashboard() {
             </div>
           </div>
 
-          <div className="quick-grid">
-            <Link className="quick-card" to="/faculty/upload">
-              <strong>Upload latest result file</strong>
-              <span>Import new workbook and refresh dataset.</span>
-            </Link>
-            <Link className="quick-card" to="/faculty/analytics">
-              <strong>Open subject bell curves</strong>
-              <span>View histogram + normal curve by subject/component.</span>
-            </Link>
-            <Link className="quick-card" to="/faculty/grade-bands">
-              <strong>Review grade bands</strong>
-              <span>Inspect grouped and scatter breakdowns.</span>
-            </Link>
-            <Link className="quick-card" to="/faculty/profile">
-              <strong>Update faculty profile</strong>
-              <span>Maintain contact, password, and preferences.</span>
-            </Link>
-          </div>
-
           <div className="chart-card">
-            <h2>Faculty status</h2>
-            <div className="stats-row">
-              <span>Latest upload: {latestUpload?.uploadId || "No uploads yet"}</span>
-              <span>Latest upload time: {latestUploadAt}</span>
-              <span>Latest upload class: {latestUpload?.classLabel || "—"}</span>
-              <span>Upload rows: {latestUpload?.rowCount ?? 0}</span>
-            </div>
-            {profileCompletionPct < 100 ? (
-              <p className="chart-hint">
-                Recommendation: complete your profile (display name, email, contact) for better admin coordination.
-              </p>
+            <h2>Academic exam updates</h2>
+            {updates.length === 0 ? (
+              <p className="sub">No published updates yet.</p>
             ) : (
-              <p className="chart-hint">Profile details look complete.</p>
+              updates.slice(0, 5).map((u, idx) => (
+                <p key={`${u.createdAt || idx}-${idx}`} className="chart-hint" style={{ margin: "0.3rem 0" }}>
+                  - {u.message}
+                </p>
+              ))
             )}
           </div>
 

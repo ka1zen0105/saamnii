@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createFaculty,
-  createSchoolClass,
   fetchAdminMeta,
   fetchSemesterSubjectCatalog,
   listFaculty,
   listSchoolClasses,
-  patchClassCurriculum,
-  patchClassTeacher,
-  patchFacultyClasses,
   patchFacultySemesterSubjects,
   patchFacultySubjects,
 } from "../../api/adminApi.js";
@@ -33,14 +29,6 @@ export function FacultyAccessPage() {
   const [allocationUserId, setAllocationUserId] = useState("");
   const [allocationSemester, setAllocationSemester] = useState(3);
   const [allocationSubjects, setAllocationSubjects] = useState([]);
-  const [allocationClasses, setAllocationClasses] = useState([]);
-
-  const [newClassLabel, setNewClassLabel] = useState("");
-  const [createClassTeacherId, setCreateClassTeacherId] = useState("");
-
-  const [currClass, setCurrClass] = useState("");
-  const [currLines, setCurrLines] = useState("");
-  const [assignClassTeacherId, setAssignClassTeacherId] = useState("");
 
   const load = useCallback(async () => {
     setErr("");
@@ -84,10 +72,8 @@ export function FacultyAccessPage() {
     const semMatch = semRows.find((r) => Number(r.semester) === Number(allocationSemester));
     if (u) {
       setAllocationSubjects([...(semMatch?.subjectCodes ?? [])]);
-      setAllocationClasses([...(u.assignedClasses ?? [])]);
     } else {
       setAllocationSubjects([]);
-      setAllocationClasses([]);
     }
   }, [allocationUserId, allocationSemester, faculty]);
 
@@ -111,34 +97,38 @@ export function FacultyAccessPage() {
       const c = String(code).trim();
       if (c && !map.has(c)) map.set(c, "");
     }
-    return [...map.entries()]
+    // Accept ratio text inside brackets with flexible formats, e.g. (3:1), (2-0-2), (TH:PR)
+    const hasBracketRatio = (value) => /\([^)]*[:\/-][^)]*\)/.test(String(value || ""));
+
+    const namedSubjects = [...map.entries()]
       .map(([code, name]) => ({ code, name }))
-      .sort((a, b) => a.code.localeCompare(b.code));
+      .filter((s) => Boolean(s.code) && Boolean(s.name));
+
+    const ratioNamedSubjects = namedSubjects.filter((s) => hasBracketRatio(s.name));
+    const finalSubjects = ratioNamedSubjects.length > 0 ? ratioNamedSubjects : namedSubjects;
+
+    return finalSubjects.sort((a, b) => a.code.localeCompare(b.code));
   }, [semesterCatalog, allocationSemester, meta.subjectCodes, allocationSubjects]);
-
-  const classOptions = useMemo(() => {
-    const u = faculty.find((x) => x.userId === allocationUserId);
-    const s = new Set([
-      ...classes.map((c) => c.classLabel).filter(Boolean),
-      ...(meta.classes ?? []),
-      ...(u?.assignedClasses ?? []),
-      ...allocationClasses,
-    ]);
-    return [...s].filter(Boolean).sort((a, b) => a.localeCompare(b));
-  }, [classes, meta.classes, faculty, allocationUserId, allocationClasses]);
-
-  useEffect(() => {
-    if (classes.length && !currClass) {
-      const first = classes[0];
-      setCurrClass(first.classLabel);
-      setCurrLines((first.curriculum ?? []).join("\n"));
-      setAssignClassTeacherId(first.teacherUserId ?? "");
-    }
-  }, [classes, currClass]);
 
   function flash(message) {
     setMsg(message);
     setTimeout(() => setMsg(""), 3500);
+  }
+
+  function renderChips(items) {
+    const values = Array.isArray(items)
+      ? items.map((v) => String(v || "").trim()).filter(Boolean)
+      : [];
+    if (!values.length) return <span className="muted-chip">—</span>;
+    return (
+      <div className="inline-chip-list">
+        {values.map((value) => (
+          <span key={value} className="inline-chip">
+            {value}
+          </span>
+        ))}
+      </div>
+    );
   }
 
   async function onAddTeacher(e) {
@@ -177,9 +167,8 @@ export function FacultyAccessPage() {
           allocationSubjects
         ),
         patchFacultySubjects(allocationUserId, allocationSubjects),
-        patchFacultyClasses(allocationUserId, allocationClasses),
       ]);
-      flash(`Subjects (Sem ${allocationSemester}) and classes saved for this faculty.`);
+      flash(`Subjects (Sem ${allocationSemester}) saved for this faculty.`);
       await load();
     } catch (e) {
       setErr(
@@ -188,63 +177,9 @@ export function FacultyAccessPage() {
     }
   }
 
-  async function onCreateClass(e) {
-    e.preventDefault();
-    setErr("");
-    try {
-      await createSchoolClass({
-        classLabel: newClassLabel.trim(),
-        teacherUserId: createClassTeacherId.trim() || undefined,
-      });
-      setNewClassLabel("");
-      setCreateClassTeacherId("");
-      flash("Class created.");
-      await load();
-    } catch (e) {
-      setErr(e?.response?.data?.message || e.message || "Could not create class.");
-    }
-  }
-
-  async function onSetClassTeacher(e) {
-    e.preventDefault();
-    if (!currClass) return;
-    setErr("");
-    try {
-      await patchClassTeacher(currClass, assignClassTeacherId.trim());
-      flash("Class teacher updated.");
-      await load();
-    } catch (e) {
-      setErr(e?.response?.data?.message || e.message || "Could not assign teacher.");
-    }
-  }
-
-  async function onSaveCurriculum(e) {
-    e.preventDefault();
-    if (!currClass) return;
-    setErr("");
-    try {
-      await patchClassCurriculum(currClass, currLines);
-      flash("Curriculum saved.");
-      await load();
-    } catch (e) {
-      setErr(e?.response?.data?.message || e.message || "Could not save curriculum.");
-    }
-  }
-
-  function onPickClass(label) {
-    setCurrClass(label);
-    const doc = classes.find((c) => c.classLabel === label);
-    setCurrLines((doc?.curriculum ?? []).join("\n"));
-    setAssignClassTeacherId(doc?.teacherUserId ?? "");
-  }
-
   return (
     <div className="faculty-page admin-page">
       <h1>Faculty access</h1>
-      <p className="sub">
-        Manage faculty identifiers, subject assignments, and class metadata stored in MongoDB.
-      </p>
-
       {msg ? (
         <div className="banner" style={{ background: "#ecfdf5", color: "#065f46" }}>
           {msg}
@@ -281,8 +216,8 @@ export function FacultyAccessPage() {
                     <td>{u.displayLabel || "—"}</td>
                     <td>{u.email || "—"}</td>
                     <td>{u.contact || "—"}</td>
-                    <td>{(u.subjectCodes ?? []).join(", ") || "—"}</td>
-                    <td>{(u.assignedClasses ?? []).join(", ") || "—"}</td>
+                    <td>{renderChips(u.subjectCodes)}</td>
+                    <td>{renderChips(u.assignedClasses)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -295,7 +230,7 @@ export function FacultyAccessPage() {
           </div>
 
           <div className="faculty-form-grid">
-            <form onSubmit={onAddTeacher}>
+            <form onSubmit={onAddTeacher} className="access-card access-card-add">
               <fieldset>
                 <legend>Add teacher</legend>
                 <label>
@@ -341,14 +276,12 @@ export function FacultyAccessPage() {
               </fieldset>
             </form>
 
-            <form onSubmit={onSaveFacultyAllocation}>
+            <form
+              onSubmit={onSaveFacultyAllocation}
+              className="access-card access-card-allocation"
+            >
               <fieldset>
                 <legend>Allocate faculty — subjects &amp; classes</legend>
-                <p className="faculty-allocation-hint">
-                  Choose a faculty member, then select one or more subject codes and class /
-                  semester batches they teach. Use Ctrl+click (Windows) or Cmd+click (Mac) to
-                  pick multiple rows in each list.
-                </p>
                 <label>
                   Faculty
                   <select
@@ -361,9 +294,7 @@ export function FacultyAccessPage() {
                     ) : (
                       faculty.map((u) => (
                         <option key={u.userId} value={u.userId}>
-                          {u.userId}
-                          {u.displayLabel ? ` — ${u.displayLabel}` : ""}
-                          {u.contact ? ` (${u.contact})` : u.email ? ` (${u.email})` : ""}
+                          {u.displayLabel || u.userId}
                         </option>
                       ))
                     )}
@@ -418,33 +349,6 @@ export function FacultyAccessPage() {
                     )}
                   </select>
                 </label>
-                <label>
-                  Classes / batches (semesters)
-                  <select
-                    className="faculty-multi"
-                    multiple
-                    value={allocationClasses}
-                    onChange={(e) =>
-                      setAllocationClasses(
-                        [...e.target.selectedOptions].map((o) => o.value)
-                      )
-                    }
-                    disabled={!faculty.length}
-                    size={Math.min(12, Math.max(4, classOptions.length || 4))}
-                  >
-                    {classOptions.length === 0 ? (
-                      <option value="" disabled>
-                        No classes yet — create a class below or upload marks with class labels
-                      </option>
-                    ) : (
-                      classOptions.map((label) => (
-                        <option key={label} value={label}>
-                          {label}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
                 <button
                   type="submit"
                   className="btn-primary-sm"
@@ -456,127 +360,6 @@ export function FacultyAccessPage() {
               </fieldset>
             </form>
 
-            <form onSubmit={onCreateClass}>
-              <fieldset>
-                <legend>Class management</legend>
-                <label>
-                  New class label
-                  <input
-                    value={newClassLabel}
-                    onChange={(e) => setNewClassLabel(e.target.value)}
-                    required
-                    placeholder="e.g. SE-A"
-                  />
-                </label>
-                <label>
-                  Class teacher (optional)
-                  <select
-                    value={createClassTeacherId}
-                    onChange={(e) => setCreateClassTeacherId(e.target.value)}
-                  >
-                    <option value="">— None —</option>
-                    {faculty.map((u) => (
-                      <option key={u.userId} value={u.userId}>
-                        {u.userId}
-                        {u.displayLabel ? ` — ${u.displayLabel}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button type="submit" className="btn-primary-sm" style={{ marginTop: "0.5rem" }}>
-                  Create class
-                </button>
-              </fieldset>
-            </form>
-
-            <form onSubmit={onSetClassTeacher}>
-              <fieldset>
-                <legend>Assign class teacher</legend>
-                <label>
-                  Class
-                  <select
-                    value={currClass}
-                    onChange={(e) => onPickClass(e.target.value)}
-                    disabled={!classes.length}
-                  >
-                    {classes.length === 0 ? (
-                      <option value="">No classes yet</option>
-                    ) : (
-                      classes.map((c) => (
-                        <option key={c.classLabel} value={c.classLabel}>
-                          {c.classLabel}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
-                <label>
-                  Class teacher
-                  <select
-                    value={assignClassTeacherId}
-                    onChange={(e) => setAssignClassTeacherId(e.target.value)}
-                    disabled={!classes.length}
-                  >
-                    <option value="">— None —</option>
-                    {faculty.map((u) => (
-                      <option key={u.userId} value={u.userId}>
-                        {u.userId}
-                        {u.displayLabel ? ` — ${u.displayLabel}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="submit"
-                  className="btn-primary-sm"
-                  style={{ marginTop: "0.5rem" }}
-                  disabled={!classes.length}
-                >
-                  Update teacher
-                </button>
-              </fieldset>
-            </form>
-
-            <form onSubmit={onSaveCurriculum}>
-              <fieldset>
-                <legend>Class curriculum</legend>
-                <label>
-                  Class
-                  <select
-                    value={currClass}
-                    onChange={(e) => onPickClass(e.target.value)}
-                    disabled={!classes.length}
-                  >
-                    {classes.length === 0 ? (
-                      <option value="">No classes yet</option>
-                    ) : (
-                      classes.map((c) => (
-                        <option key={c.classLabel} value={c.classLabel}>
-                          {c.classLabel}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
-                <label>
-                  Subject list (one code or line per line)
-                  <textarea
-                    value={currLines}
-                    onChange={(e) => setCurrLines(e.target.value)}
-                    placeholder={"CS101\nMA201\nHS301"}
-                    disabled={!classes.length}
-                  />
-                </label>
-                <button
-                  type="submit"
-                  className="btn-primary-sm"
-                  style={{ marginTop: "0.5rem" }}
-                  disabled={!classes.length}
-                >
-                  Save curriculum
-                </button>
-              </fieldset>
-            </form>
           </div>
         </>
       )}

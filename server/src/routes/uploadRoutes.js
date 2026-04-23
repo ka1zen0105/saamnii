@@ -34,7 +34,6 @@ router.get("/my-uploads", verifyToken, requireFaculty, getMyUploads);
 router.get(
   "/:uploadId/records",
   verifyToken,
-  requireFaculty,
   getUploadRecords
 );
 router.get("/:uploadId/analytics", verifyToken, getUploadAnalytics);

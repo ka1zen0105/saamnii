@@ -5,9 +5,8 @@ import { FacultyLayout } from "./layouts/FacultyLayout.jsx";
 import { LandingPage } from "./pages/LandingPage.jsx";
 import { AdminDashboard } from "./pages/admin/AdminDashboard.jsx";
 import { AdminAnalyticsPage } from "./pages/admin/AdminAnalyticsPage.jsx";
-import { AdminGradeBandsPage } from "./pages/admin/AdminGradeBandsPage.jsx";
+import { AdminStudentAnalysisPage } from "./pages/admin/AdminStudentAnalysisPage.jsx";
 import { FacultyAccessPage } from "./pages/admin/FacultyAccessPage.jsx";
-import { ReviewMarksPage } from "./pages/admin/ReviewMarksPage.jsx";
 import { FacultyDashboard } from "./pages/faculty/FacultyDashboard.jsx";
 import { UploadPage } from "./pages/faculty/UploadPage.jsx";
 import { AnalyticsPage } from "./pages/faculty/AnalyticsPage.jsx";
@@ -29,9 +28,8 @@ export default function App() {
       >
         <Route index element={<Navigate to="dashboard" replace />} />
         <Route path="dashboard" element={<AdminDashboard />} />
-        <Route path="review-marks" element={<ReviewMarksPage />} />
+        <Route path="analysis-of-students" element={<AdminStudentAnalysisPage />} />
         <Route path="analytics" element={<AdminAnalyticsPage />} />
-        <Route path="grade-bands" element={<AdminGradeBandsPage />} />
         <Route path="faculty-access" element={<FacultyAccessPage />} />
       </Route>
 

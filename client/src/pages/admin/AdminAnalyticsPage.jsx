@@ -1,189 +1,117 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { fetchAdminDashboard, fetchAdminMeta } from "../../api/adminApi.js";
-import {
-  fetchBellCurve,
-  fetchExamProgression,
-  fetchSubjectAvg,
-} from "../../api/analyticsApi.js";
+import { useEffect, useMemo, useState } from "react";
+import { SubjectBellCurveChart } from "../../components/SubjectBellCurveChart.jsx";
+import { fetchUploadRecords } from "../../api/analyticsApi.js";
+import { listFaculty, listFacultyUploadsForAdmin } from "../../api/adminApi.js";
+import { parseRowsToSubjectData } from "../../utils/sheetParser.js";
 import "../../styles/facultyPages.css";
 import "../../styles/adminPages.css";
 
-async function mergeBellCurves(baseParams, subjectCodes, exam) {
-  const ex = exam || "total";
-  if (!subjectCodes.length) return [];
-  const results = await Promise.all(
-    subjectCodes.map((subjectCode) =>
-      fetchBellCurve({ ...baseParams, subjectCode, exam: ex }).catch(() => null)
-    )
-  );
-  let template = null;
-  for (const r of results) {
-    if (r && Array.isArray(r) && r.length) {
-      template = r.map((b) => ({ percentage: b.percentage, count: 0 }));
-      break;
-    }
-  }
-  if (!template) return [];
-  for (const r of results) {
-    if (!r || !Array.isArray(r)) continue;
-    r.forEach((b, i) => {
-      if (template[i]) template[i].count += b.count ?? 0;
-    });
-  }
-  return template;
+function canonicalSubjectCode(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  const firstToken = firstLine.split(/\s+/)[0].trim();
+  return firstToken.toUpperCase();
 }
 
 export function AdminAnalyticsPage() {
-  const [dash, setDash] = useState(null);
-  const [meta, setMeta] = useState({ classes: [], subjectCodes: [] });
-
-  const [aSubjectAvg, setASubjectAvg] = useState([]);
-  const [aProgression, setAProgression] = useState([]);
-  const [aBell, setABell] = useState([]);
-
-  const [bClass, setBClass] = useState("");
-  const [bSubject, setBSubject] = useState("");
-  const [bExam, setBExam] = useState("total");
-  const [bSubjectAvg, setBSubjectAvg] = useState([]);
-  const [bProgression, setBProgression] = useState([]);
-  const [bBell, setBBell] = useState([]);
-
-  const [loadingA, setLoadingA] = useState(true);
-  const [loadingB, setLoadingB] = useState(true);
+  const [faculty, setFaculty] = useState([]);
+  const [facultyId, setFacultyId] = useState("");
+  const [uploads, setUploads] = useState([]);
+  const [uploadId, setUploadId] = useState("");
+  const [rows, setRows] = useState([]);
+  const [semester, setSemester] = useState("");
+  const [facultyOptions, setFacultyOptions] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
-  const bParams = useMemo(() => {
-    const p = {};
-    if (bClass) p.classLabel = bClass;
-    return p;
-  }, [bClass]);
+  const semesterOptions = useMemo(() => {
+    const vals = Array.from(
+      new Set(
+        (rows || [])
+          .map((r) => (r?.semester == null ? "" : String(r.semester).trim()))
+          .filter(Boolean)
+      )
+    );
+    return vals.sort((a, b) => Number(a) - Number(b));
+  }, [rows]);
 
-  const loadSectionA = useCallback(async () => {
-    setErr("");
-    setLoadingA(true);
-    try {
-      const [d, m, subj, prog] = await Promise.all([
-        fetchAdminDashboard(),
-        fetchAdminMeta(),
-        fetchSubjectAvg({}),
-        fetchExamProgression({}),
-      ]);
-      setDash(d);
-      setMeta(m);
-      setASubjectAvg(Array.isArray(subj) ? subj : []);
-      setAProgression(Array.isArray(prog) ? prog : []);
-
-      const codes = m?.subjectCodes?.length
-        ? m.subjectCodes
-        : (Array.isArray(subj) ? subj : []).map((s) => s.subjectCode).filter(Boolean);
-      const bell = await mergeBellCurves({}, codes, "total");
-      setABell(bell);
-    } catch (e) {
-      setErr(e?.response?.data?.message || e.message || "Failed to load section A.");
-    } finally {
-      setLoadingA(false);
-    }
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setErr("");
+      try {
+        const list = await listFaculty();
+        setFaculty(Array.isArray(list) ? list : []);
+        setFacultyOptions(Array.isArray(list) ? list : []);
+        if (list?.length) setFacultyId(list[0].userId);
+      } catch (e) {
+        setErr(e?.response?.data?.message || e.message || "Failed to load faculty list.");
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, []);
 
-  const loadSectionB = useCallback(async () => {
-    setLoadingB(true);
+  useEffect(() => {
+    if (!facultyId) return;
+    (async () => {
+      setLoading(true);
+      setErr("");
+      try {
+        const list = await listFacultyUploadsForAdmin(facultyId);
+        setUploads(list);
+        const pick = list[0]?.uploadId || "";
+        setUploadId(pick);
+        if (!pick) {
+          setRows([]);
+          return;
+        }
+        const rec = await fetchUploadRecords(pick);
+        setRows(rec?.rows ?? []);
+      } catch (e) {
+        setErr(e?.response?.data?.message || e.message || "Failed to load faculty uploads.");
+        setRows([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [facultyId]);
+
+  async function onSelectUpload(nextUploadId) {
+    if (!nextUploadId) return;
+    setLoading(true);
+    setErr("");
     try {
-      const [subj, prog] = await Promise.all([
-        fetchSubjectAvg(bParams),
-        fetchExamProgression(bParams),
-      ]);
-      setBSubjectAvg(Array.isArray(subj) ? subj : []);
-      let progList = Array.isArray(prog) ? prog : [];
-      if (bSubject) {
-        progList = progList.filter((p) => (p.subjectCode || "") === bSubject);
-      }
-      setBProgression(progList);
-
-      let bell;
-      if (bSubject) {
-        bell = await fetchBellCurve({
-          ...bParams,
-          subjectCode: bSubject,
-          exam: bExam,
-        });
-      } else {
-        const codes =
-          meta.subjectCodes?.length > 0
-            ? meta.subjectCodes
-            : (Array.isArray(subj) ? subj : []).map((s) => s.subjectCode).filter(Boolean);
-        bell = await mergeBellCurves(bParams, codes, bExam);
-      }
-      setBBell(Array.isArray(bell) ? bell : []);
+      const rec = await fetchUploadRecords(nextUploadId);
+      setUploadId(nextUploadId);
+      setRows(rec?.rows ?? []);
     } catch (e) {
-      setErr(e?.response?.data?.message || e.message || "Failed to load filtered charts.");
-      setBBell([]);
+      setErr(e?.response?.data?.message || e.message || "Failed to load selected upload.");
+      setRows([]);
     } finally {
-      setLoadingB(false);
+      setLoading(false);
     }
-  }, [bParams, bSubject, bExam, meta.subjectCodes]);
+  }
 
-  useEffect(() => {
-    loadSectionA();
-  }, [loadSectionA]);
-
-  useEffect(() => {
-    loadSectionB();
-  }, [loadSectionB]);
-
-  const statsA = dash?.stats;
-
-  const barCombined = useMemo(() => {
-    return aSubjectAvg.map((s) => ({
-      name: s.subjectCode || s.subjectName || "—",
-      avg: s.avgTotal != null && Number.isFinite(s.avgTotal) ? Math.round(s.avgTotal * 100) / 100 : 0,
-    }));
-  }, [aSubjectAvg]);
-
-  const lineCombined = useMemo(() => {
-    return aProgression.map((p) => ({
-      name: p.subjectCode || p.subjectName || "—",
-      ISE: p.avgIse != null ? Math.round(p.avgIse * 100) / 100 : null,
-      MSE: p.avgMse != null ? Math.round(p.avgMse * 100) / 100 : null,
-      ESE: p.avgEse != null ? Math.round(p.avgEse * 100) / 100 : null,
-    }));
-  }, [aProgression]);
-
-  const barFiltered = useMemo(() => {
-    let list = bSubjectAvg;
-    if (bSubject) {
-      list = list.filter((s) => (s.subjectCode || "") === bSubject);
-    }
-    return list.map((s) => ({
-      name: s.subjectCode || s.subjectName || "—",
-      avg: s.avgTotal != null && Number.isFinite(s.avgTotal) ? Math.round(s.avgTotal * 100) / 100 : 0,
-    }));
-  }, [bSubjectAvg, bSubject]);
-
-  const lineFiltered = useMemo(() => {
-    return bProgression.map((p) => ({
-      name: p.subjectCode || p.subjectName || "—",
-      ISE: p.avgIse != null ? Math.round(p.avgIse * 100) / 100 : null,
-      MSE: p.avgMse != null ? Math.round(p.avgMse * 100) / 100 : null,
-      ESE: p.avgEse != null ? Math.round(p.avgEse * 100) / 100 : null,
-    }));
-  }, [bProgression]);
+  const scopedRows = useMemo(() => {
+    if (!semester) return rows;
+    return (rows || []).filter((r) => String(r?.semester ?? "").trim() === semester);
+  }, [rows, semester]);
+  const parsedData = useMemo(() => parseRowsToSubjectData(scopedRows), [scopedRows]);
+  const selectedFaculty = useMemo(
+    () => faculty.find((f) => f.userId === facultyId) || null,
+    [faculty, facultyId]
+  );
+  const preferredSubjectCode = useMemo(() => {
+    const first = selectedFaculty?.subjectCodes?.[0];
+    return canonicalSubjectCode(first);
+  }, [selectedFaculty]);
 
   return (
     <div className="faculty-page admin-page">
       <h1>Analytics</h1>
-      <p className="sub">Institution-wide analytics and filtered drill-down.</p>
+      <p className="sub">Bell curve analytics for selected faculty upload.</p>
 
       {err ? (
         <div className="banner banner-error" role="alert">
@@ -191,195 +119,63 @@ export function AdminAnalyticsPage() {
         </div>
       ) : null}
 
-      <h2 className="section-title">Section A — Combined (all classes &amp; subjects)</h2>
-      {loadingA ? (
-        <p className="sub">Loading section A…</p>
-      ) : (
-        <>
-          <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, minmax(0,1fr))" }}>
-            <div className="stat-card">
-              <div className="label">Avg SGPA</div>
-              <div className="value">
-                {statsA?.avgSgpa != null ? statsA.avgSgpa : "—"}
-              </div>
-            </div>
-            <div className="stat-card">
-              <div className="label">Subjects count</div>
-              <div className="value">{statsA?.subjectsCount ?? 0}</div>
-            </div>
-            <div className="stat-card">
-              <div className="label">Rows count</div>
-              <div className="value">{statsA?.recordRows ?? 0}</div>
-            </div>
-          </div>
-
-          <div className="chart-card">
-            <h2>Subject average (combined)</h2>
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={barCombined} margin={{ top: 8, right: 16, left: 0, bottom: 48 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fontSize: 10 }}
-                    angle={-30}
-                    textAnchor="end"
-                    height={70}
-                  />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="avg" fill="#2563eb" radius={[4, 4, 0, 0]} name="Avg total marks" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="chart-card">
-            <h2>Exam averages (combined)</h2>
-            <p className="chart-hint">Per subject: average ISE / MSE / ESE as % where available.</p>
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={lineCombined} margin={{ top: 8, right: 16, left: 0, bottom: 48 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fontSize: 10 }}
-                    angle={-30}
-                    textAnchor="end"
-                    height={70}
-                  />
-                  <YAxis domain={[0, 100]} />
-                  <Tooltip />
-                  <Legend />
-                  <Line type="monotone" dataKey="ISE" stroke="#2563eb" dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="MSE" stroke="#7c3aed" dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="ESE" stroke="#059669" dot={false} strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="chart-card">
-            <h2>Bell curve (combined)</h2>
-            <p className="chart-hint">Total % pooled across all subjects.</p>
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={aBell} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="percentage" tick={{ fontSize: 9 }} />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip />
-                  <Bar dataKey="count" fill="#6366f1" radius={[2, 2, 0, 0]} name="Students" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </>
-      )}
-
-      <h2 className="section-title">Section B — Filtered</h2>
       <div className="faculty-toolbar">
         <label>
-          Class
-          <select value={bClass} onChange={(e) => setBClass(e.target.value)}>
-            <option value="">All classes</option>
-            {meta.classes.map((c) => (
-              <option key={c} value={c}>
-                {c}
+          Faculty
+          <select value={facultyId} onChange={(e) => setFacultyId(e.target.value)} disabled={loading}>
+            {facultyOptions.length === 0 ? (
+              <option value="">No faculty available</option>
+            ) : null}
+            {facultyOptions.map((f) => (
+              <option key={f.userId} value={f.userId}>
+                {f.userId}
+                {f.displayLabel ? ` — ${f.displayLabel}` : ""}
               </option>
             ))}
           </select>
         </label>
         <label>
-          Subject
-          <select value={bSubject} onChange={(e) => setBSubject(e.target.value)}>
-            <option value="">All subjects</option>
-            {meta.subjectCodes.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
+          Uploaded dataset
+          <select
+            value={uploadId}
+            onChange={(e) => onSelectUpload(e.target.value)}
+            disabled={loading || uploads.length === 0}
+          >
+            {uploads.length === 0 ? (
+              <option value="">No uploads available</option>
+            ) : (
+              uploads.map((u) => (
+                <option key={u.uploadId} value={u.uploadId}>
+                  {u.classLabel || "Class?"} • {u.uploadId} • {new Date(u.createdAt).toLocaleString()}
+                </option>
+              ))
+            )}
           </select>
         </label>
         <label>
-          Exam (bell curve)
-          <select value={bExam} onChange={(e) => setBExam(e.target.value)}>
-            <option value="total">Total %</option>
-            <option value="ise">ISE %</option>
-            <option value="ese">ESE %</option>
+          Semester
+          <select value={semester} onChange={(e) => setSemester(e.target.value)} disabled={loading}>
+            <option value="">All semesters</option>
+            {semesterOptions.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
           </select>
         </label>
       </div>
 
-      {loadingB ? (
-        <p className="sub">Loading filtered charts…</p>
+      {loading ? (
+        <p className="sub">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="sub">No uploaded records found for selected faculty.</p>
+      ) : scopedRows.length === 0 ? (
+        <p className="sub">No rows found for selected semester.</p>
       ) : (
-        <>
-          <div className="chart-card">
-            <h2>Subject average (filtered)</h2>
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={barFiltered} margin={{ top: 8, right: 16, left: 0, bottom: 48 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fontSize: 10 }}
-                    angle={-30}
-                    textAnchor="end"
-                    height={70}
-                  />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="avg" fill="#0d9488" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="chart-card">
-            <h2>Exam averages (filtered)</h2>
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={lineFiltered} margin={{ top: 8, right: 16, left: 0, bottom: 48 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fontSize: 10 }}
-                    angle={-30}
-                    textAnchor="end"
-                    height={70}
-                  />
-                  <YAxis domain={[0, 100]} />
-                  <Tooltip />
-                  <Legend />
-                  <Line type="monotone" dataKey="ISE" stroke="#2563eb" dot strokeWidth={2} />
-                  <Line type="monotone" dataKey="MSE" stroke="#7c3aed" dot strokeWidth={2} />
-                  <Line type="monotone" dataKey="ESE" stroke="#059669" dot strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="chart-card">
-            <h2>Bell curve (filtered)</h2>
-            <p className="chart-hint">
-              {bSubject
-                ? `Single subject — ${bExam.toUpperCase()}`
-                : "All subjects in scope merged by bucket."}
-            </p>
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={bBell} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="percentage" tick={{ fontSize: 9 }} />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip />
-                  <Bar dataKey="count" fill="#db2777" radius={[2, 2, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </>
+        <SubjectBellCurveChart
+          parsedData={parsedData}
+          preferredSubjectCode={preferredSubjectCode}
+        />
       )}
     </div>
   );

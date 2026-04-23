@@ -1,4 +1,5 @@
 import { Student, Upload } from "../models/index.js";
+import { Settings } from "../models/Settings.js";
 import {
   computeGradeBands,
   subjectEsePercent,
@@ -27,6 +28,14 @@ function normalizeSubjectCode(value) {
   return firstToken.toUpperCase();
 }
 
+function normalizeText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function subjectCodeSetFromUser(user) {
   const codes = Array.isArray(user?.subjectCodes) ? user.subjectCodes : [];
   return new Set(codes.map((c) => normalizeSubjectCode(c)).filter(Boolean));
@@ -40,6 +49,7 @@ function subjectCodeSetFromUser(user) {
  */
 async function buildScopedStudentFilter(req) {
   const classLabel = trimQuery(req.query.classLabel);
+  const facultyIdQuery = trimQuery(req.query.facultyId);
   const semester = parseSemester(req.query);
 
   /** @type {Record<string, unknown>} */
@@ -95,6 +105,13 @@ async function buildScopedStudentFilter(req) {
       }
     }
     return filter;
+  }
+
+  // Admin optional scope: view analytics for one faculty's uploaded data.
+  if (role === "admin" && facultyIdQuery) {
+    const uploads = await Upload.find({ facultyId: facultyIdQuery }).select("uploadId").lean().exec();
+    const uploadIds = uploads.map((u) => trimQuery(u?.uploadId)).filter(Boolean);
+    filter.uploadId = uploadIds.length ? { $in: uploadIds } : { $in: [] };
   }
 
   if (classLabel) {
@@ -156,6 +173,173 @@ function bucketIndexForPercentage(pct) {
   if (pct == null || !Number.isFinite(pct)) return null;
   const clamped = Math.max(0, Math.min(100, pct));
   return Math.min(19, Math.floor(clamped / 5));
+}
+
+function websiteRouteContextForRole(role) {
+  if (role === "admin") {
+    return [
+      { to: "/admin/dashboard", label: "Dashboard", purpose: "Overview, updates, O-grade pie chart" },
+      { to: "/admin/analysis-of-students", label: "Grade Band", purpose: "Faculty-wise grade charts" },
+      { to: "/admin/analytics", label: "Analytics", purpose: "Bell curve analysis" },
+      { to: "/admin/faculty-access", label: "Faculty Access", purpose: "Add faculty and allocate subjects" },
+    ];
+  }
+  return [
+    { to: "/faculty/dashboard", label: "Dashboard", purpose: "Overview and updates" },
+    { to: "/faculty/upload", label: "Upload", purpose: "Upload workbook/result file" },
+    { to: "/faculty/analytics", label: "Analytics", purpose: "Bell curve and advanced analysis" },
+    { to: "/faculty/grade-bands", label: "Grade Bands", purpose: "Grade distribution graphs" },
+    { to: "/faculty/profile", label: "Profile", purpose: "Update email/contact/password" },
+  ];
+}
+
+function normalizeLinks(rawLinks, role) {
+  const allowed = websiteRouteContextForRole(role);
+  const allowMap = new Map(allowed.map((l) => [l.to, l]));
+  if (!Array.isArray(rawLinks)) return [];
+  const out = [];
+  for (const row of rawLinks) {
+    const to = trimQuery(row?.to);
+    if (!allowMap.has(to)) continue;
+    const safe = allowMap.get(to);
+    out.push({
+      to,
+      label: trimQuery(row?.label) || safe.label,
+    });
+  }
+  return out.slice(0, 4);
+}
+
+function looksLikeSubjectSummaryRequest(message) {
+  const m = normalizeText(message);
+  if (!m) return false;
+  const asksSummary = /\b(summary|summarize|overview|report|analysis)\b/.test(m);
+  const mentionsGrade = /\b(grade|grades|grading|performance|result)\b/.test(m);
+  const mentionsSubject = /\b(subject|course)\b/.test(m);
+  return asksSummary && (mentionsGrade || mentionsSubject);
+}
+
+function pickRequestedSubject(message, students) {
+  const m = normalizeText(message);
+  const subjectMap = new Map();
+  for (const s of students) {
+    for (const sub of s.subjects || []) {
+      const code = trimQuery(sub?.code);
+      const name = trimQuery(sub?.name);
+      const key = code || name;
+      if (!key) continue;
+      subjectMap.set(key, { code, name });
+    }
+  }
+
+  let best = null;
+  let bestScore = 0;
+  for (const cand of subjectMap.values()) {
+    const codeNorm = normalizeText(cand.code);
+    const nameNorm = normalizeText(cand.name);
+    let score = 0;
+    if (codeNorm && m.includes(codeNorm)) score += 3;
+    if (nameNorm && m.includes(nameNorm)) score += 4;
+    if (!score && nameNorm) {
+      const nameTokens = nameNorm.split(" ").filter((t) => t.length > 2);
+      const hit = nameTokens.filter((t) => m.includes(t)).length;
+      if (hit >= 2) score += hit;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = cand;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
+async function buildSubjectGradeSummary(req, message) {
+  if (!looksLikeSubjectSummaryRequest(message)) return null;
+  const students = await loadScopedStudents(req);
+  if (!students.length) {
+    return {
+      answer: "I could not find uploaded student records in your current access scope.",
+      links:
+        req.user?.role === "admin"
+          ? [{ to: "/admin/analysis-of-students", label: "Open Grade Band" }]
+          : [{ to: "/faculty/upload", label: "Go to Upload" }],
+    };
+  }
+
+  const subjectPick = pickRequestedSubject(message, students);
+  if (!subjectPick) {
+    return {
+      answer:
+        "I can summarize subject grades if you mention a subject code or name, e.g. 'summarize my subject grade for BSC12EC05'.",
+      links:
+        req.user?.role === "admin"
+          ? [{ to: "/admin/analysis-of-students", label: "Open Grade Band" }]
+          : [{ to: "/faculty/grade-bands", label: "Open Grade Bands" }],
+    };
+  }
+
+  const grades = new Map();
+  let total = 0;
+  let pass = 0;
+  let fail = 0;
+  let pctSum = 0;
+  let pctCount = 0;
+
+  const targetCode = normalizeSubjectCode(subjectPick.code);
+  const targetName = normalizeText(subjectPick.name);
+
+  for (const s of students) {
+    for (const sub of s.subjects || []) {
+      const codeNorm = normalizeSubjectCode(sub?.code);
+      const nameNorm = normalizeText(sub?.name);
+      const codeMatch = targetCode && codeNorm === targetCode;
+      const nameMatch = targetName && nameNorm === targetName;
+      if (!codeMatch && !nameMatch) continue;
+
+      total += 1;
+      const g = normalizeGradeSymbol(sub?.grade) || "(blank)";
+      grades.set(g, (grades.get(g) || 0) + 1);
+      const outcome = classifyOutcome(sub?.result);
+      if (outcome === "pass") pass += 1;
+      else if (outcome === "fail") fail += 1;
+      const pct = subjectTotalPercent(sub);
+      if (pct != null && Number.isFinite(Number(pct))) {
+        pctSum += Number(pct);
+        pctCount += 1;
+      }
+    }
+  }
+
+  if (total === 0) {
+    return {
+      answer: `I found no grade rows for ${subjectPick.code || subjectPick.name} in your current scope.`,
+      links:
+        req.user?.role === "admin"
+          ? [{ to: "/admin/analysis-of-students", label: "Open Grade Band" }]
+          : [{ to: "/faculty/grade-bands", label: "Open Grade Bands" }],
+    };
+  }
+
+  const topGrades = [...grades.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([g, c]) => `${g}:${c}`)
+    .join(", ");
+  const avgPct = pctCount ? (pctSum / pctCount).toFixed(2) : "N/A";
+  const passRate = total ? ((pass / total) * 100).toFixed(1) : "0.0";
+  const subjectLabel = subjectPick.code && subjectPick.name
+    ? `${subjectPick.code} (${subjectPick.name})`
+    : subjectPick.code || subjectPick.name || "Selected subject";
+
+  return {
+    answer:
+      `Grade summary for ${subjectLabel}: total rows ${total}, pass ${pass}, fail ${fail}, pass rate ${passRate}%, average percentage ${avgPct}. ` +
+      `Top grade counts: ${topGrades || "no grade symbols available"}.`,
+    links:
+      req.user?.role === "admin"
+        ? [{ to: "/admin/analysis-of-students", label: "Open Grade Band" }]
+        : [{ to: "/faculty/grade-bands", label: "Open Grade Bands" }],
+  };
 }
 
 /**
@@ -485,6 +669,138 @@ export async function getUploadRecords(req, res) {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error fetching records" });
+  }
+}
+
+/**
+ * GET /api/analytics/exam-updates
+ * Published admin exam updates (read-only for authenticated users).
+ */
+export async function getExamUpdates(req, res, next) {
+  try {
+    const settings = await Settings.findById("app").lean();
+    const updates = Array.isArray(settings?.examUpdates)
+      ? settings.examUpdates
+          .filter((u) => u?.published && String(u?.message || "").trim())
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      : [];
+    return res.json({ updates });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/analytics/help-chat
+ * Body: { message: string, history?: { role: "user"|"assistant", text: string }[] }
+ */
+export async function postHelpChat(req, res, next) {
+  try {
+    const message = trimQuery(req.body?.message);
+    const history = Array.isArray(req.body?.history) ? req.body.history : [];
+    if (!message) {
+      return res.status(400).json({ message: "message is required" });
+    }
+
+    const deterministicSummary = await buildSubjectGradeSummary(req, message);
+    if (deterministicSummary) {
+      return res.json(deterministicSummary);
+    }
+
+    const role = req.user?.role === "admin" ? "admin" : "faculty";
+    const routes = websiteRouteContextForRole(role);
+    const ollamaBase = trimQuery(process.env.OLLAMA_BASE_URL) || "http://127.0.0.1:11434";
+    const preferredModel = trimQuery(process.env.OLLAMA_MODEL);
+    const modelCandidates = preferredModel
+      ? [preferredModel]
+      : ["llama3.1:latest", "llama3.1:8b", "llama3:latest"];
+
+    const systemPrompt = [
+      "You are an in-app assistant for a College Examination Grading Analysis website.",
+      "Answer only with guidance related to this website's features and workflows.",
+      `Current user role: ${role}. Never suggest routes outside this role.`,
+      "If asked non-website things, politely redirect to website usage help.",
+      "Keep response concise and actionable.",
+      "Return STRICT JSON only with shape:",
+      '{"answer":"string","links":[{"to":"string","label":"string"}]}',
+      "Use only these allowed links:",
+      JSON.stringify(routes),
+    ].join("\n");
+
+    const chatMessages = [
+      { role: "system", content: systemPrompt },
+      ...history
+        .slice(-8)
+        .map((h) => ({
+          role: h?.role === "assistant" ? "assistant" : "user",
+          content: trimQuery(h?.text),
+        }))
+        .filter((h) => h.content),
+      { role: "user", content: message },
+    ];
+
+    let modelText = "";
+    let lastError = null;
+    for (const modelName of modelCandidates) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const resp = await fetch(`${ollamaBase}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: modelName,
+            messages: chatMessages,
+            stream: false,
+            options: { temperature: 0.2 },
+          }),
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          lastError = new Error(`Ollama error ${resp.status}: ${text.slice(0, 200)}`);
+          continue;
+        }
+        const data = await resp.json();
+        modelText = trimQuery(data?.message?.content || data?.response || "");
+        if (modelText) break;
+      } catch (e) {
+        lastError = e;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    if (!modelText && lastError) throw lastError;
+
+    let parsed = null;
+    if (modelText) {
+      try {
+        parsed = JSON.parse(modelText);
+      } catch {
+        const m = modelText.match(/\{[\s\S]*\}/);
+        if (m) {
+          try {
+            parsed = JSON.parse(m[0]);
+          } catch {
+            parsed = null;
+          }
+        }
+      }
+    }
+
+    const answer =
+      trimQuery(parsed?.answer) ||
+      "I can help with navigation and usage of dashboard, upload, analytics, grade bands, and profile/faculty access.";
+    const links = normalizeLinks(parsed?.links, role);
+    return res.json({ answer, links });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      return res.status(504).json({
+        message:
+          "Local Ollama did not respond in time. Ensure it is running (e.g. ollama serve).",
+      });
+    }
+    next(err);
   }
 }
 

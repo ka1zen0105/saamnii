@@ -13,6 +13,7 @@ import {
   downloadGradeBandsXlsx,
   fetchAdminMeta,
   fetchGradeBandsPooled,
+  listFaculty,
 } from "../../api/adminApi.js";
 import "../../styles/facultyPages.css";
 import "../../styles/adminPages.css";
@@ -48,7 +49,9 @@ function BandCard({ subject }) {
 export function AdminGradeBandsPage() {
   const [classLabel, setClassLabel] = useState("");
   const [subjectCode, setSubjectCode] = useState("");
+  const [facultyId, setFacultyId] = useState("");
   const [meta, setMeta] = useState({ classes: [], subjectCodes: [] });
+  const [facultyOptions, setFacultyOptions] = useState([]);
   const [pooledBands, setPooledBands] = useState([]);
   const [perSubject, setPerSubject] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -57,19 +60,22 @@ export function AdminGradeBandsPage() {
 
   const params = useMemo(() => {
     const p = {};
+    if (facultyId) p.facultyId = facultyId;
     if (classLabel) p.classLabel = classLabel;
     if (subjectCode) p.subjectCode = subjectCode;
     return p;
-  }, [classLabel, subjectCode]);
+  }, [facultyId, classLabel, subjectCode]);
 
   const loadMeta = useCallback(async () => {
     try {
-      const m = await fetchAdminMeta();
+      const [m, faculty] = await Promise.all([fetchAdminMeta(params), listFaculty()]);
       setMeta({ classes: m?.classes ?? [], subjectCodes: m?.subjectCodes ?? [] });
+      setFacultyOptions(Array.isArray(faculty) ? faculty : []);
     } catch {
       setMeta({ classes: [], subjectCodes: [] });
+      setFacultyOptions([]);
     }
-  }, []);
+  }, [params]);
 
   const load = useCallback(async () => {
     setErr("");
@@ -131,6 +137,25 @@ export function AdminGradeBandsPage() {
       </p>
 
       <div className="faculty-toolbar">
+        <label>
+          Faculty
+          <select
+            value={facultyId}
+            onChange={(e) => {
+              setFacultyId(e.target.value);
+              setClassLabel("");
+              setSubjectCode("");
+            }}
+          >
+            <option value="">All faculty</option>
+            {facultyOptions.map((f) => (
+              <option key={f.userId} value={f.userId}>
+                {f.userId}
+                {f.displayLabel ? ` — ${f.displayLabel}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
         <label>
           Class
           <select value={classLabel} onChange={(e) => setClassLabel(e.target.value)}>

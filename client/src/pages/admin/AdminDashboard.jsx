@@ -1,23 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
   Cell,
   Legend,
-  Line,
-  LineChart,
   Pie,
   PieChart,
   ResponsiveContainer,
   Tooltip,
-  XAxis,
-  YAxis,
 } from "recharts";
 import {
+  createAdminExamUpdate,
   fetchAdminDashboard,
-  fetchAdminSettings,
-  patchAdminSettings,
+  fetchAdminExamUpdates,
+  fetchFacultyOGradeDistribution,
 } from "../../api/adminApi.js";
 import "../../styles/facultyPages.css";
 import "../../styles/adminPages.css";
@@ -47,7 +41,10 @@ function formatPct(value) {
 
 export function AdminDashboard() {
   const [dash, setDash] = useState(null);
-  const [publish, setPublish] = useState(false);
+  const [updates, setUpdates] = useState([]);
+  const [facultyOPie, setFacultyOPie] = useState([]);
+  const [newUpdate, setNewUpdate] = useState("");
+  const [publishing, setPublishing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
@@ -55,12 +52,14 @@ export function AdminDashboard() {
     setErr("");
     setLoading(true);
     try {
-      const [d, s] = await Promise.all([
+      const [d, u, oDist] = await Promise.all([
         fetchAdminDashboard(),
-        fetchAdminSettings(),
+        fetchAdminExamUpdates(),
+        fetchFacultyOGradeDistribution(),
       ]);
       setDash(d);
-      setPublish(Boolean(s?.publishResults));
+      setUpdates(Array.isArray(u) ? u : []);
+      setFacultyOPie(Array.isArray(oDist) ? oDist : []);
     } catch (e) {
       setErr(e?.response?.data?.message || e.message || "Failed to load.");
     } finally {
@@ -72,19 +71,14 @@ export function AdminDashboard() {
     load();
   }, [load]);
 
-  async function onPublishChange(checked) {
-    setPublish(checked);
-    try {
-      await patchAdminSettings({ publishResults: checked });
-    } catch {
-      setPublish(!checked);
-    }
-  }
-
   const stats = dash?.stats;
-  const gradePie = Object.entries(dash?.gradeDistribution ?? {}).map(
-    ([name, value]) => ({ name, value })
-  );
+  const gradePie = facultyOPie.map((r) => ({
+    name: r.facultyLabel || r.facultyId,
+    percentage: Number(r.oPercentage || 0),
+    oCount: Number(r.oCount || 0),
+    total: Number(r.total || 0),
+    facultyId: r.facultyId,
+  }));
   const passFailBars = (dash?.passFailBySubject ?? []).map((r) => ({
     name: r.subjectCode || r.subjectName || "—",
     Pass: r.pass,
@@ -99,30 +93,32 @@ export function AdminDashboard() {
     .sort((a, b) => (b.Fail ?? 0) - (a.Fail ?? 0))
     .at(0);
 
+  async function onPublishUpdate(e) {
+    e.preventDefault();
+    const msg = String(newUpdate || "").trim();
+    if (!msg) return;
+    setPublishing(true);
+    setErr("");
+    try {
+      const data = await createAdminExamUpdate(msg);
+      setUpdates(Array.isArray(data?.updates) ? data.updates : []);
+      setNewUpdate("");
+    } catch (e2) {
+      setErr(e2?.response?.data?.message || e2?.message || "Failed to publish update.");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
   return (
     <div className="faculty-page admin-page">
       <h1>Dashboard</h1>
-      <p className="sub">Institution snapshot, quality trends, and publication controls.</p>
 
       {err ? (
         <div className="banner banner-error" role="alert">
           {err}
         </div>
       ) : null}
-
-      <div className={`admin-publish-wrap ${publish ? "is-on" : "is-off"}`}>
-        <label className="admin-publish">
-          <input
-            type="checkbox"
-            checked={publish}
-            onChange={(e) => onPublishChange(e.target.checked)}
-          />
-          Publish results to students
-        </label>
-        <span className="admin-publish-state">
-          {publish ? "Live to students" : "Hidden from students"}
-        </span>
-      </div>
 
       {loading ? (
         <p className="sub">Loading…</p>
@@ -164,92 +160,86 @@ export function AdminDashboard() {
             </div>
           </div>
 
-          <div className="chart-card">
-            <h2>Grade distribution</h2>
-            {gradePie.length === 0 ? (
-              <p className="sub">No grade rows available for charting yet.</p>
-            ) : null}
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={gradePie}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={110}
-                    label={({ name, percent }) =>
-                      `${name} ${(percent * 100).toFixed(0)}%`
-                    }
+          <div className="admin-two-col">
+            <div className="chart-card">
+              <h2>Academic exam related updates</h2>
+              <form onSubmit={onPublishUpdate} style={{ marginBottom: "0.75rem" }}>
+                <label style={{ display: "block", fontSize: "0.82rem", color: "#4b5563", marginBottom: "0.35rem" }}>
+                  Publish new update
+                </label>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <input
+                    value={newUpdate}
+                    onChange={(e) => setNewUpdate(e.target.value)}
+                    placeholder="e.g. Sem-3 re-evaluation schedule published."
+                    style={{
+                      flex: 1,
+                      padding: "0.5rem 0.65rem",
+                      border: "1px solid #d1d5db",
+                      borderRadius: "0.45rem",
+                      fontSize: "0.86rem",
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    className="btn-primary-sm"
+                    disabled={publishing || !newUpdate.trim()}
                   >
-                    {gradePie.map((_, i) => (
-                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(v) => [formatInt(v), "Rows"]} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
+                    {publishing ? "Publishing..." : "Publish"}
+                  </button>
+                </div>
+              </form>
+              <div style={{ marginTop: "0.65rem" }}>
+                {updates.length === 0 ? (
+                  <p className="sub">No published updates yet.</p>
+                ) : (
+                  updates.slice(0, 5).map((u, idx) => (
+                    <div key={`${u.createdAt || idx}-${idx}`} className="chart-hint" style={{ margin: "0.28rem 0" }}>
+                      - {u.message}
+                    </div>
+                  ))
+                )}
+              </div>
+              <p className="chart-hint" style={{ marginTop: "0.5rem" }}>
+                Latest exam updates are based on uploaded datasets. Use Analysis and Analytics
+                sections to drill into faculty-wise performance and bell curves.
+              </p>
+            </div>
+
+            <div className="chart-card">
+              <h2>Faculty-wise O grade percentage</h2>
+              {gradePie.length === 0 ? (
+                <p className="sub">No faculty O-grade data available for selected filters.</p>
+              ) : null}
+              <div className="chart-wrap">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={gradePie}
+                    dataKey="percentage"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={110}
+                    label={({ name, value }) => `${name} ${Number(value).toFixed(1)}%`}
+                    >
+                      {gradePie.map((_, i) => (
+                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                  <Tooltip
+                    formatter={(v, _name, item) => [
+                      `${Number(v).toFixed(2)}%`,
+                      `O: ${item?.payload?.oCount ?? 0} / ${item?.payload?.total ?? 0}`,
+                    ]}
+                  />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
             </div>
           </div>
 
-          <div className="chart-card">
-            <h2>Pass vs fail per subject</h2>
-            {passFailBars.length === 0 ? (
-              <p className="sub">No subject outcomes available for charting yet.</p>
-            ) : null}
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={passFailBars}
-                  margin={{ top: 8, right: 16, left: 0, bottom: 48 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fontSize: 10 }}
-                    angle={-30}
-                    textAnchor="end"
-                    height={70}
-                  />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip formatter={(v) => [formatInt(v), "Students"]} />
-                  <Legend />
-                  <Bar dataKey="Pass" fill="#059669" radius={[2, 2, 0, 0]} />
-                  <Bar dataKey="Fail" fill="#dc2626" radius={[2, 2, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="chart-card">
-            <h2>Performance trend (by upload batch order)</h2>
-            <p className="chart-hint">
-              Each point is one uploaded batch&apos;s average SGPA, ordered by upload time.
-            </p>
-            {trend.length === 0 ? (
-              <p className="sub">No upload trend data available yet.</p>
-            ) : null}
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trend} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                  <YAxis domain={[0, "auto"]} />
-                  <Tooltip formatter={(v) => [Number(v).toFixed(2), "Avg SGPA"]} />
-                  <Line
-                    type="monotone"
-                    dataKey="avgSgpa"
-                    stroke="#2563eb"
-                    strokeWidth={2}
-                    dot
-                    connectNulls
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
         </>
       )}
     </div>

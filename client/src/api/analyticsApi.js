@@ -5,6 +5,11 @@ export async function fetchDashboard(params) {
   return data;
 }
 
+export async function fetchExamUpdates() {
+  const { data } = await api.get("/api/analytics/exam-updates");
+  return data?.updates ?? [];
+}
+
 export async function fetchExamProgression(params) {
   const { data } = await api.get("/api/analytics/exam-progression", { params });
   return data;
@@ -55,5 +60,10 @@ export async function fetchUploadAnalytics(uploadId) {
 
 export async function deleteUploadData(uploadId) {
   const { data } = await api.delete(`/api/upload/${encodeURIComponent(uploadId)}`);
+  return data;
+}
+
+export async function askHelpChat(message, history = []) {
+  const { data } = await api.post("/api/analytics/help-chat", { message, history });
   return data;
 }
