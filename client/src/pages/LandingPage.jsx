@@ -6,7 +6,7 @@ import "./LandingPage.css";
 export function LandingPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -14,8 +14,8 @@ export function LandingPage() {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-    if (!email.trim()) {
-      setError("Enter your email.");
+    if (!identifier.trim()) {
+      setError("Enter your email or user ID.");
       return;
     }
     if (!password) {
@@ -24,7 +24,7 @@ export function LandingPage() {
     }
     setLoading(true);
     try {
-      const auth = await login(email.trim(), password);
+      const auth = await login(identifier.trim(), password);
       navigate(
         auth?.user?.role === "admin" ? "/admin/dashboard" : "/faculty/dashboard",
         { replace: true }
@@ -51,7 +51,7 @@ export function LandingPage() {
         <article className="landing-card landing-card-single">
           <h2 className="landing-card-title">Sign in</h2>
           <p className="landing-card-desc">
-            Enter your mentor email and password.
+            Enter your email or user ID and password.
           </p>
 
           {error ? (
@@ -61,18 +61,18 @@ export function LandingPage() {
           ) : null}
 
           <form onSubmit={handleSubmit} className="landing-form">
-            <label className="landing-label" htmlFor="login-email">
-              Email
+            <label className="landing-label" htmlFor="login-identifier">
+              Email or user ID
             </label>
             <input
-              id="login-email"
+              id="login-identifier"
               className="landing-input"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type="text"
+              autoComplete="username"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
               disabled={loading}
-              placeholder="name@college.edu"
+              placeholder="name@college.edu or faculty-prof"
             />
 
             <label className="landing-label" htmlFor="login-password">

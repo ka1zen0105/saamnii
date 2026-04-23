@@ -7,8 +7,8 @@
 :root {
   font-family: system-ui, "Segoe UI", Roboto, sans-serif;
   line-height: 1.5;
-  color: #1f2937;
-  background: #f9fafb;
+  color: #263a53;
+  background: #e9f1fb;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -17,8 +17,8 @@
 
 body {
   margin: 0;
-  background: #f9fafb;
-  color: #1f2937;
+  background: #e9f1fb;
+  color: #263a53;
 }
 
 #root {

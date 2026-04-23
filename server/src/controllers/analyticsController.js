@@ -19,9 +19,17 @@ function trimQuery(value) {
   return String(value).trim();
 }
 
+function normalizeSubjectCode(value) {
+  const raw = trimQuery(value);
+  if (!raw) return "";
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  const firstToken = firstLine.split(/\s+/)[0].trim();
+  return firstToken.toUpperCase();
+}
+
 function subjectCodeSetFromUser(user) {
   const codes = Array.isArray(user?.subjectCodes) ? user.subjectCodes : [];
-  return new Set(codes.map((c) => trimQuery(c)).filter(Boolean));
+  return new Set(codes.map((c) => normalizeSubjectCode(c)).filter(Boolean));
 }
 
 /**
@@ -46,21 +54,25 @@ async function buildScopedStudentFilter(req) {
   const assigned = Array.isArray(user?.assignedClasses)
     ? user.assignedClasses.map((c) => String(c).trim()).filter(Boolean)
     : [];
+  const facultyId = trimQuery(user?.userId);
+
+  async function applyOwnUploadScope(targetFilter) {
+    const ownUploads = facultyId
+      ? await Upload.find({ facultyId }).select("uploadId").lean().exec()
+      : [];
+    const uploadIds = ownUploads
+      .map((u) => trimQuery(u?.uploadId))
+      .filter(Boolean);
+    if (uploadIds.length === 0) {
+      targetFilter.uploadId = { $in: [] };
+    } else {
+      targetFilter.uploadId = { $in: uploadIds };
+    }
+  }
 
   if (role === "faculty") {
     if (assigned.length === 0) {
-      const facultyId = trimQuery(user?.userId);
-      const ownUploads = facultyId
-        ? await Upload.find({ facultyId }).select("uploadId").lean().exec()
-        : [];
-      const uploadIds = ownUploads
-        .map((u) => trimQuery(u?.uploadId))
-        .filter(Boolean);
-      if (uploadIds.length === 0) {
-        filter.uploadId = { $in: [] };
-        return filter;
-      }
-      filter.uploadId = { $in: uploadIds };
+      await applyOwnUploadScope(filter);
       if (classLabel) {
         filter.classLabel = classLabel;
       }
@@ -74,7 +86,13 @@ async function buildScopedStudentFilter(req) {
       }
       filter.classLabel = classLabel;
     } else {
-      filter.classLabel = { $in: assigned };
+      const assignedCount = await Student.countDocuments({ classLabel: { $in: assigned } });
+      if (assignedCount > 0) {
+        filter.classLabel = { $in: assigned };
+      } else {
+        // Assigned class labels may become stale; fall back to this faculty's own uploads.
+        await applyOwnUploadScope(filter);
+      }
     }
     return filter;
   }
@@ -98,7 +116,7 @@ async function loadScopedStudents(req) {
   const scoped = [];
   for (const s of students) {
     const subs = Array.isArray(s.subjects) ? s.subjects : [];
-    const filteredSubs = subs.filter((sub) => allowed.has(trimQuery(sub?.code)));
+    const filteredSubs = subs.filter((sub) => allowed.has(normalizeSubjectCode(sub?.code)));
     if (!filteredSubs.length) continue;
     scoped.push({ ...s, subjects: filteredSubs });
   }

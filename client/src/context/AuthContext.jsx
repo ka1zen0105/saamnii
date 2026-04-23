@@ -54,9 +54,13 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [state, setState] = useState(() => loadStored());
 
-  const login = useCallback(async (email, password) => {
+  const login = useCallback(async (identifier, password) => {
     try {
-      const { data } = await api.post("/api/auth/login", { email, password });
+      const { data } = await api.post("/api/auth/login", {
+        email: identifier,
+        userId: identifier,
+        password,
+      });
       const token = data?.token;
       if (!token || typeof token !== "string") {
         throw new Error("No token in response");

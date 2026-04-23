@@ -51,10 +51,11 @@
 }
 
 .stat-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 0.5rem;
+  background: #ffffff;
+  border: 1px solid #d9e5f5;
+  border-radius: 0.85rem;
   padding: 1rem 1.1rem;
+  box-shadow: 0 8px 20px rgba(37, 72, 118, 0.06);
 }
 
 .stat-card .label {
@@ -73,11 +74,12 @@
 }
 
 .chart-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 0.5rem;
+  background: #ffffff;
+  border: 1px solid #d9e5f5;
+  border-radius: 0.85rem;
   padding: 1rem 1rem 0.5rem;
   margin-bottom: 1.25rem;
+  box-shadow: 0 8px 20px rgba(37, 72, 118, 0.06);
 }
 
 .chart-card h2 {
@@ -113,10 +115,11 @@
 
 .table-wrap {
   overflow: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 0.5rem;
+  border: 1px solid #d9e5f5;
+  border-radius: 0.85rem;
   background: #fff;
   max-height: 480px;
+  box-shadow: 0 8px 20px rgba(37, 72, 118, 0.05);
 }
 
 .data-table {
@@ -134,21 +137,21 @@
 }
 
 .data-table th {
-  background: #f9fafb;
+  background: #eef4fd;
   font-weight: 600;
-  color: #374151;
+  color: #3a5270;
   position: sticky;
   top: 0;
 }
 
 .insights {
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 0.5rem;
+  background: #edf5ff;
+  border: 1px solid #c9defb;
+  border-radius: 0.85rem;
   padding: 1rem 1.15rem;
   margin-bottom: 1.25rem;
   font-size: 0.9rem;
-  color: #1e3a8a;
+  color: #284d86;
   line-height: 1.55;
 }
 

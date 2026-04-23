@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import html2canvas from "html2canvas";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -12,98 +11,198 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useAuth } from "../../context/AuthContext.jsx";
-import { fetchGradeBands } from "../../api/analyticsApi.js";
+import { fetchMyUploads, fetchUploadRecords } from "../../api/analyticsApi.js";
 import "../../styles/facultyPages.css";
 
-export function GradeBandsPage() {
-  const { user } = useAuth();
-  const classes = user?.assignedClasses ?? [];
-  const assignedSubjects = useMemo(() => {
-    return new Set((user?.subjectCodes ?? []).map((c) => String(c).trim()).filter(Boolean));
-  }, [user?.subjectCodes]);
+const GRADE_ORDER = ["O", "A", "B", "C", "D", "E", "P", "F"];
 
-  const [classLabel, setClassLabel] = useState("");
-  const [subjectCode, setSubjectCode] = useState("");
-  const [subjectOptions, setSubjectOptions] = useState([]);
-  const [data, setData] = useState(null);
+function classifyGradeFromPercentage(pct) {
+  if (!Number.isFinite(pct)) return null;
+  if (pct >= 85) return "O";
+  if (pct >= 80) return "A";
+  if (pct >= 70) return "B";
+  if (pct >= 60) return "C";
+  if (pct >= 50) return "D";
+  if (pct >= 45) return "E";
+  if (pct >= 40) return "P";
+  return "F";
+}
+
+function toFinite(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function detectMaxMarks(observedMax, fallbackMax) {
+  if (!Number.isFinite(observedMax) || observedMax <= 0) return fallbackMax;
+  if (observedMax <= 20) return 20;
+  if (observedMax <= 30) return 30;
+  if (observedMax <= 40) return 40;
+  if (observedMax <= 50) return 50;
+  return 100;
+}
+
+function subjectKey(row) {
+  const code = String(row?.subjectCode ?? "").trim();
+  const name = String(row?.subject ?? "").trim();
+  return code && name ? `${code} — ${name}` : code || name || "Unknown Subject";
+}
+
+function buildExamGradeDistribution(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  /** @type {Map<string, { ISE: number[], ISE2: number[], MSE: number[], ESE: number[] }>} */
+  const observed = new Map();
+  for (const r of list) {
+    const key = subjectKey(r);
+    if (!observed.has(key)) observed.set(key, { ISE: [], ISE2: [], MSE: [], ESE: [] });
+    const bucket = observed.get(key);
+    const ise = toFinite(r?.ise1);
+    const ise2 = toFinite(r?.ise2);
+    const mse = toFinite(r?.mse);
+    const ese = toFinite(r?.ese);
+    if (ise != null && ise >= 0) bucket.ISE.push(ise);
+    if (ise2 != null && ise2 >= 0) bucket.ISE2.push(ise2);
+    if (mse != null && mse >= 0) bucket.MSE.push(mse);
+    if (ese != null && ese >= 0) bucket.ESE.push(ese);
+  }
+
+  /** @type {Record<string, Array<{grade: string, ISE: number, ISE2: number, MSE: number, ESE: number}>>} */
+  const out = {};
+  for (const [key, vals] of observed.entries()) {
+    const maxISE = detectMaxMarks(vals.ISE.length ? Math.max(...vals.ISE) : null, 40);
+    const maxISE2 = detectMaxMarks(vals.ISE2.length ? Math.max(...vals.ISE2) : null, 50);
+    const maxMSE = detectMaxMarks(vals.MSE.length ? Math.max(...vals.MSE) : null, 30);
+    const maxESE = detectMaxMarks(vals.ESE.length ? Math.max(...vals.ESE) : null, 30);
+    /** @type {Record<string, {grade: string, ISE: number, ISE2: number, MSE: number, ESE: number}>} */
+    const counts = Object.fromEntries(
+      GRADE_ORDER.map((g) => [g, { grade: g, ISE: 0, ISE2: 0, MSE: 0, ESE: 0 }])
+    );
+
+    for (const r of list) {
+      if (subjectKey(r) !== key) continue;
+      const ise = toFinite(r?.ise1);
+      const ise2 = toFinite(r?.ise2);
+      const mse = toFinite(r?.mse);
+      const ese = toFinite(r?.ese);
+
+      const gIse = classifyGradeFromPercentage(ise != null ? (ise / maxISE) * 100 : NaN);
+      const gIse2 = classifyGradeFromPercentage(ise2 != null ? (ise2 / maxISE2) * 100 : NaN);
+      const gMse = classifyGradeFromPercentage(mse != null ? (mse / maxMSE) * 100 : NaN);
+      const gEse = classifyGradeFromPercentage(ese != null ? (ese / maxESE) * 100 : NaN);
+
+      if (gIse) counts[gIse].ISE += 1;
+      if (gIse2) counts[gIse2].ISE2 += 1;
+      if (gMse) counts[gMse].MSE += 1;
+      if (gEse) counts[gEse].ESE += 1;
+    }
+
+    out[key] = GRADE_ORDER.map((g) => counts[g]);
+  }
+  return out;
+}
+
+export function GradeBandsPage() {
+  const [uploads, setUploads] = useState([]);
+  const [currentUploadId, setCurrentUploadId] = useState("");
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const bySubject = useMemo(() => buildExamGradeDistribution(rows), [rows]);
+  const subjects = useMemo(() => Object.keys(bySubject), [bySubject]);
+  const [subject, setSubject] = useState("");
 
   const load = useCallback(async () => {
     setErr("");
     setLoading(true);
     try {
-      const raw = await fetchGradeBands(classLabel ? { classLabel } : {});
-      const list = Array.isArray(raw) ? raw : [];
-      const allCodes = list
-        .map((d) => String(d?.subjectCode ?? "").trim())
-        .filter(Boolean);
-      const allowed = Array.from(assignedSubjects);
-      const options = allowed.length ? allCodes.filter((c) => assignedSubjects.has(c)) : allCodes;
-      setSubjectOptions(options);
-
-      const active = subjectCode || options[0] || "";
-      if (!subjectCode && active) {
-        setSubjectCode(active);
-      }
-      if (!active) {
-        setData(null);
+      const list = await fetchMyUploads();
+      setUploads(list);
+      const pick = list[0]?.uploadId || "";
+      if (!pick) {
+        setCurrentUploadId("");
+        setRows([]);
         return;
       }
-
-      const match = list.find((d) => String(d.subjectCode ?? "").trim() === active) || null;
-      setData(match);
+      setCurrentUploadId(pick);
+      const rec = await fetchUploadRecords(pick);
+      setRows(rec?.rows ?? []);
     } catch (e) {
       setErr(e?.response?.data?.message || e.message || "Failed to load grade bands.");
-      setData(null);
+      setRows([]);
     } finally {
       setLoading(false);
     }
-  }, [classLabel, subjectCode, assignedSubjects]);
+  }, []);
 
   useEffect(() => {
     load();
   }, [load]);
 
   useEffect(() => {
-    if (!subjectCode && assignedSubjects.size > 0) {
-      const first = Array.from(assignedSubjects)[0];
-      setSubjectCode(first);
-      setSubjectOptions(Array.from(assignedSubjects));
+    if (!subject && subjects.length) setSubject(subjects[0]);
+    if (subject && !subjects.includes(subject)) setSubject(subjects[0] || "");
+  }, [subject, subjects]);
+
+  async function onSelectUpload(uploadId) {
+    if (!uploadId) return;
+    setLoading(true);
+    setErr("");
+    try {
+      const rec = await fetchUploadRecords(uploadId);
+      setCurrentUploadId(uploadId);
+      setRows(rec?.rows ?? []);
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Failed to load selected upload.");
+      setRows([]);
+    } finally {
+      setLoading(false);
     }
-  }, [subjectCode, assignedSubjects]);
+  }
+
+  const chartData = bySubject[subject] ?? [];
 
   return (
     <div className="faculty-page">
       <h1>Grade bands</h1>
-      <p className="sub">Bar graph and scatter plot for your assigned subject only.</p>
+      <p className="sub">
+        Exam-wise grade distribution chart from extracted rows of the selected uploaded dataset.
+      </p>
 
       <div className="faculty-toolbar">
         <label>
-          Class
-          <select value={classLabel} onChange={(e) => setClassLabel(e.target.value)}>
-            <option value="">All assigned</option>
-            {classes.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
+          Uploaded dataset
+          <select
+            value={currentUploadId}
+            onChange={(e) => onSelectUpload(e.target.value)}
+            disabled={loading || uploads.length === 0}
+          >
+            {uploads.length === 0 ? (
+              <option value="">No uploads available</option>
+            ) : (
+              uploads.map((u) => (
+                <option key={u.uploadId} value={u.uploadId}>
+                  {u.classLabel || "Class?"} • {u.uploadId} • {new Date(u.createdAt).toLocaleString()}
+                </option>
+              ))
+            )}
           </select>
         </label>
         <label>
           Subject
           <select
-            value={subjectCode}
-            onChange={(e) => setSubjectCode(e.target.value)}
-            disabled={subjectOptions.length === 0}
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            disabled={loading || subjects.length === 0}
           >
-            {subjectOptions.length === 0 ? <option value="">No subject assigned</option> : null}
-            {subjectOptions.map((code) => (
-              <option key={code} value={code}>
-                {code}
-              </option>
-            ))}
+            {subjects.length === 0 ? (
+              <option value="">No subject data</option>
+            ) : (
+              subjects.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))
+            )}
           </select>
         </label>
       </div>
@@ -116,113 +215,81 @@ export function GradeBandsPage() {
 
       {loading ? (
         <p className="sub">Loading…</p>
-      ) : !subjectCode ? (
-        <p className="sub">No subject data found for this class scope.</p>
-      ) : !data ? (
-        <p className="sub">No grade-band data found for selected subject.</p>
+      ) : rows.length === 0 ? (
+        <p className="sub">No uploaded records found. Upload a file first.</p>
+      ) : !subject ? (
+        <p className="sub">No subject data found for selected upload.</p>
       ) : (
-        <SubjectBandSection subject={data} />
+        <section className="grade-band-block">
+          <div className="chart-card" style={{ border: "none", marginBottom: "1rem" }}>
+            <h2 style={{ fontSize: "1.05rem", textAlign: "center", fontWeight: 700 }}>{subject}</h2>
+            <div className="chart-wrap" style={{ height: 340 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="grade" />
+                  <YAxis allowDecimals={false} label={{ value: "No. of students", angle: -90, position: "insideLeft" }} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="ISE" fill="#3b6fb6" />
+                  <Bar dataKey="ISE2" fill="#ed8936" name="ISE TUT" />
+                  <Bar dataKey="MSE" fill="#9e9e9e" />
+                  <Bar dataKey="ESE" fill="#f3c200" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="chart-card" style={{ border: "none", marginBottom: 0 }}>
+            <h2 style={{ fontSize: "1rem", textAlign: "center", fontWeight: 700 }}>
+              Frequency polygon (same distribution)
+            </h2>
+            <div className="chart-wrap" style={{ height: 340 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="grade" />
+                  <YAxis
+                    allowDecimals={false}
+                    label={{ value: "No. of students", angle: -90, position: "insideLeft" }}
+                  />
+                  <Tooltip />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="ISE"
+                    stroke="#3b6fb6"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="ISE2"
+                    name="ISE TUT"
+                    stroke="#ed8936"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="MSE"
+                    stroke="#9e9e9e"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="ESE"
+                    stroke="#f3c200"
+                    strokeWidth={2}
+                    dot={{ r: 3 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </section>
       )}
     </div>
-  );
-}
-
-function SubjectBandSection({ subject }) {
-  const captureRef = useRef(null);
-
-  const rows = (subject.bands ?? []).map((b) => ({
-    band: b.gradeSymbol,
-    label: b.label,
-    ISE_TH: b.ise,
-    ISE_TU: b.iseTu ?? 0,
-    MSE: b.mse,
-    ESE: b.ese,
-    Total: b.total,
-  }));
-
-  async function handlePng() {
-    const el = captureRef.current;
-    if (!el) return;
-    try {
-      const canvas = await html2canvas(el, {
-        scale: 2,
-        backgroundColor: "#ffffff",
-        useCORS: true,
-      });
-      const a = document.createElement("a");
-      a.href = canvas.toDataURL("image/png");
-      const safe = (subject.subjectCode || "subject").replace(/[^\w-]+/g, "_");
-      a.download = `grade-bands-${safe}.png`;
-      a.click();
-    } catch {
-      /* ignore */
-    }
-  }
-
-  const title = subject.subjectCode
-    ? `${subject.subjectCode} — ${subject.subjectName}`
-    : subject.subjectName || "Subject";
-
-  return (
-    <section className="grade-band-block">
-      <div className="grade-band-head">
-        <h2>{title}</h2>
-        <button type="button" className="btn-png" onClick={handlePng}>
-          Download PNG
-        </button>
-      </div>
-
-      <div ref={captureRef} className="chart-capture">
-        <div className="chart-card" style={{ border: "none", marginBottom: "0.75rem" }}>
-          <h2 style={{ fontSize: "0.9rem" }}>Grouped bar - students per grade band</h2>
-          <div className="chart-wrap" style={{ height: 280 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={rows}
-                margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="band" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="ISE_TH" fill="#3b82f6" name="ISE-TH" />
-                <Bar dataKey="ISE_TU" fill="#fb923c" name="ISE-TU" />
-                <Bar dataKey="MSE" fill="#a3a3a3" name="MSE" />
-                <Bar dataKey="ESE" fill="#facc15" name="ESE" />
-                <Bar dataKey="Total" fill="#60a5fa" name="Total" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="chart-card" style={{ border: "none", marginBottom: 0 }}>
-          <h2 style={{ fontSize: "0.9rem" }}>Scatter / line - component comparison</h2>
-          <div className="chart-wrap" style={{ height: 240 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis
-                  dataKey="band"
-                  tick={{ fontSize: 11 }}
-                />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                <Tooltip
-                  cursor={{ strokeDasharray: "3 3" }}
-                  formatter={(value, key) => [value, key]}
-                  labelFormatter={(label, payload) => payload?.[0]?.payload?.label || label}
-                />
-                <Legend />
-                <Line type="monotone" dataKey="ISE_TH" name="ISE-TH" stroke="#3b82f6" dot />
-                <Line type="monotone" dataKey="ISE_TU" name="ISE-TU" stroke="#fb923c" dot />
-                <Line type="monotone" dataKey="MSE" name="MSE" stroke="#a3a3a3" dot />
-                <Line type="monotone" dataKey="ESE" name="ESE" stroke="#facc15" dot />
-                <Line type="monotone" dataKey="Total" name="Total" stroke="#60a5fa" dot />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-    </section>
   );
 }
