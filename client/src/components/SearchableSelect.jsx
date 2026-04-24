@@ -4,14 +4,23 @@ function normalize(v) {
   return String(v ?? "").toLowerCase().trim();
 }
 
+function optionHaystack(o) {
+  const extra =
+    o?.searchText != null && String(o.searchText).trim() !== ""
+      ? String(o.searchText)
+      : "";
+  return normalize(`${o?.label ?? ""} ${o?.value ?? ""} ${extra}`);
+}
+
 export function SearchableSelect({
   value,
   onChange,
   options,
   disabled = false,
   placeholder = "Select",
-  searchPlaceholder = "Search...",
+  searchPlaceholder = "Type to filter…",
   emptyMessage = "No options found",
+  maxVisible = 18,
 }) {
   const inputId = useId();
   const wrapRef = useRef(null);
@@ -23,22 +32,10 @@ export function SearchableSelect({
   const filtered = useMemo(() => {
     const q = normalize(query);
     if (!q) return list;
-    const matches = list.filter((o) => {
-      const label = normalize(o?.label);
-      const val = normalize(o?.value);
-      return label.includes(q) || val.includes(q);
-    });
-    // Keep currently selected option visible while searching for smoother UX.
-    if (
-      selectedOption &&
-      !matches.some((o) => String(o?.value ?? "") === String(selectedOption?.value ?? ""))
-    ) {
-      return [selectedOption, ...matches];
-    }
-    return matches;
-  }, [list, query, selectedOption]);
+    return list.filter((o) => optionHaystack(o).includes(q));
+  }, [list, query]);
   const shown = query ? filtered : list;
-  const visibleSuggestions = shown.slice(0, 10);
+  const visibleSuggestions = shown.slice(0, Math.max(4, Number(maxVisible) || 18));
 
   useEffect(() => {
     function onDocClick(event) {
@@ -62,7 +59,7 @@ export function SearchableSelect({
           value={open ? query : selectedOption?.label || ""}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setOpen(true)}
-          placeholder={searchPlaceholder}
+          placeholder={open ? searchPlaceholder : placeholder}
           disabled={disabled}
           autoComplete="off"
           aria-label={searchPlaceholder}

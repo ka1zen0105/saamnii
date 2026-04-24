@@ -161,7 +161,7 @@ export function FacultyDashboard() {
             onChange={setClassLabel}
             options={classes.map((c) => ({ value: c, label: c }))}
             placeholder={isAdmin ? "All Classes" : "All Assigned Classes"}
-            searchPlaceholder="Search Class..."
+            searchPlaceholder="Search class label…"
           />
         </label>
         <label>
@@ -174,7 +174,7 @@ export function FacultyDashboard() {
               label: subjectDisplayName(s.subjectName || s.subjectCode),
             }))}
             placeholder="Select Subject"
-            searchPlaceholder="Search Subject..."
+            searchPlaceholder="Search code or subject name…"
           />
         </label>
       </div>

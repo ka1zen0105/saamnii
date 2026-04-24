@@ -195,7 +195,7 @@ export function GradeBandsPage() {
             }))}
             disabled={loading || uploads.length === 0}
             placeholder="No Uploads Available"
-            searchPlaceholder="Search Upload..."
+            searchPlaceholder="Search class, upload ID, or date…"
           />
         </label>
         <label>
@@ -206,7 +206,7 @@ export function GradeBandsPage() {
             options={subjects.map((s) => ({ value: s, label: subjectDisplayName(s) }))}
             disabled={loading || subjects.length === 0}
             placeholder="No Subject Data"
-            searchPlaceholder="Search Subject..."
+            searchPlaceholder="Search code or subject name…"
           />
         </label>
       </div>

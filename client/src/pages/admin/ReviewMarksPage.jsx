@@ -114,7 +114,7 @@ export function ReviewMarksPage() {
             onChange={setClassLabel}
             options={classes.map((c) => ({ value: c, label: c }))}
             placeholder="All Classes"
-            searchPlaceholder="Search Class..."
+            searchPlaceholder="Search class label…"
           />
         </label>
         <label>
@@ -124,7 +124,7 @@ export function ReviewMarksPage() {
             onChange={setSubjectCode}
             options={subjectCodes.map((c) => ({ value: c, label: subjectDisplayName(c) }))}
             placeholder="All Subjects"
-            searchPlaceholder="Search Subject..."
+            searchPlaceholder="Search code or subject name…"
           />
         </label>
       </div>

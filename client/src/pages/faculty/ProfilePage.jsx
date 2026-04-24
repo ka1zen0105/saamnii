@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchMyProfile, patchMyProfile } from "../../api/facultyApi.js";
-import { useTheme } from "../../context/ThemeContext.jsx";
-import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import "../../styles/facultyPages.css";
 
 export function ProfilePage() {
-  const { theme, setTheme } = useTheme();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState({ type: "", text: "" });
@@ -213,26 +210,6 @@ export function ProfilePage() {
               <button type="submit" className="btn-primary-sm" disabled={saving}>
                 {saving ? "Saving…" : "Save Profile"}
               </button>
-            </fieldset>
-
-            <fieldset>
-              <legend>Preferences</legend>
-              <label htmlFor="profile-theme">Theme</label>
-              <SearchableSelect
-                value={theme}
-                onChange={(v) => setTheme(v === "dark" ? "dark" : "light")}
-                options={[
-                  { value: "light", label: "Light" },
-                  { value: "dark", label: "Dark" },
-                ]}
-                disabled={saving}
-                placeholder="Select Theme"
-                searchPlaceholder="Search Theme..."
-              />
-
-              <p className="faculty-allocation-hint" style={{ marginTop: "0.6rem" }}>
-                Theme Preference Is Saved on This Device.
-              </p>
             </fieldset>
           </form>
         </>

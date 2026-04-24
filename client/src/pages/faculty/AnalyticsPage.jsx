@@ -148,7 +148,7 @@ export function AnalyticsPage() {
             }))}
             disabled={loading || uploads.length === 0}
             placeholder="No Uploads Available"
-            searchPlaceholder="Search Upload..."
+            searchPlaceholder="Search class, upload ID, or date…"
           />
         </label>
       </div>

@@ -207,7 +207,7 @@ export function UploadPage() {
             options={classes.map((c) => ({ value: c, label: c }))}
             disabled={busy}
             placeholder="Derive from Sheet / Default"
-            searchPlaceholder="Search Class..."
+            searchPlaceholder="Search class label…"
           />
         </label>
         <label>
@@ -223,7 +223,7 @@ export function UploadPage() {
             }))}
             disabled={busy || uploads.length === 0}
             placeholder="No Uploads Yet"
-            searchPlaceholder="Search Upload..."
+            searchPlaceholder="Search class, upload ID, or date…"
           />
         </label>
       </div>

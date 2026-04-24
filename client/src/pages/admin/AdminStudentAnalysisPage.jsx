@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   Bar,
   BarChart,
@@ -18,6 +19,7 @@ import "../../styles/adminPages.css";
 import { downloadElementAsPng } from "../../utils/exportPng.js";
 import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import { subjectDisplayName } from "../../utils/subjectLabel.js";
+import { toFacultySelectOption } from "../../utils/facultySelect.js";
 
 const GRADE_ORDER = ["O", "A", "B", "C", "D", "E", "P", "F"];
 
@@ -122,6 +124,7 @@ export function AdminStudentAnalysisPage() {
   const [subject, setSubject] = useState("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [bulkPngBusy, setBulkPngBusy] = useState(false);
 
   const semesterOptions = useMemo(() => {
     const vals = Array.from(
@@ -245,6 +248,65 @@ export function AdminStudentAnalysisPage() {
     await downloadElementAsPng(lineCaptureRef.current, `${subject}-admin-grade-band-polygon`);
   }
 
+  function subjectFileSlug(s) {
+    const display = subjectDisplayName(s);
+    return display
+      .replace(/[\\/:*?"<>|]+/g, "_")
+      .replace(/\s+/g, "-")
+      .slice(0, 96);
+  }
+
+  async function waitForCharts() {
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setTimeout(resolve, 420);
+        });
+      });
+    });
+  }
+
+  async function onDownloadAllSubjectsPngs() {
+    if (!semester) {
+      setErr("Select a semester first, then download PNGs for all subjects in that semester.");
+      return;
+    }
+    if (!subjects.length) {
+      setErr("No subjects available for the current filters.");
+      return;
+    }
+    if (scopedRows.length === 0) {
+      setErr("No rows for the selected semester.");
+      return;
+    }
+
+    setBulkPngBusy(true);
+    setErr("");
+    const previousSubject = subject;
+    const list = [...subjects];
+    const semLabel = String(semester).replace(/[^\w.-]+/g, "_");
+
+    try {
+      for (const subj of list) {
+        flushSync(() => setSubject(subj));
+        await waitForCharts();
+        const base = `${semLabel}-${subjectFileSlug(subj)}`;
+        await downloadElementAsPng(barCaptureRef.current, `${base}-admin-grade-band-bar`);
+        await downloadElementAsPng(lineCaptureRef.current, `${base}-admin-grade-band-polygon`);
+      }
+    } catch (e) {
+      setErr(e?.message || "Bulk PNG export failed.");
+    } finally {
+      if (previousSubject && subjects.includes(previousSubject)) {
+        flushSync(() => setSubject(previousSubject));
+      } else if (subjects[0]) {
+        flushSync(() => setSubject(subjects[0]));
+      }
+      await waitForCharts();
+      setBulkPngBusy(false);
+    }
+  }
+
   return (
     <div className="faculty-page admin-page">
       <h1>Grade Band</h1>
@@ -256,13 +318,10 @@ export function AdminStudentAnalysisPage() {
           <SearchableSelect
             value={facultyId}
             onChange={setFacultyId}
-            options={faculty.map((f) => ({
-              value: f.userId,
-              label: `${f.userId}${f.displayLabel ? ` — ${f.displayLabel}` : ""}`,
-            }))}
-            disabled={loading}
+            options={faculty.map(toFacultySelectOption)}
+            disabled={loading || bulkPngBusy}
             placeholder="No Faculty Available"
-            searchPlaceholder="Search Faculty..."
+            searchPlaceholder="Search by name, email, or ID…"
           />
         </label>
         <label>
@@ -276,9 +335,9 @@ export function AdminStudentAnalysisPage() {
                 u.createdAt
               ).toLocaleString()}`,
             }))}
-            disabled={loading || uploads.length === 0}
+            disabled={loading || uploads.length === 0 || bulkPngBusy}
             placeholder="No Uploads Available"
-            searchPlaceholder="Search Upload..."
+            searchPlaceholder="Search class, upload ID, or date…"
           />
         </label>
         <label>
@@ -287,9 +346,9 @@ export function AdminStudentAnalysisPage() {
             value={semester}
             onChange={setSemester}
             options={semesterOptions.map((s) => ({ value: s, label: s }))}
-            disabled={loading}
+            disabled={loading || bulkPngBusy}
             placeholder="All Semesters"
-            searchPlaceholder="Search Semester..."
+            searchPlaceholder="Type semester number…"
           />
         </label>
         <label>
@@ -298,10 +357,33 @@ export function AdminStudentAnalysisPage() {
             value={subject}
             onChange={setSubject}
             options={subjects.map((s) => ({ value: s, label: subjectDisplayName(s) }))}
-            disabled={loading || subjects.length === 0}
+            disabled={loading || subjects.length === 0 || bulkPngBusy}
             placeholder="No Subject Data"
-            searchPlaceholder="Search Subject..."
+            searchPlaceholder="Search code or subject name…"
           />
+        </label>
+        <div className="faculty-toolbar-spacer" aria-hidden="true" />
+        <label className="faculty-toolbar-bulk-png">
+          <span className="faculty-toolbar-bulk-png-label">Semester PNG pack</span>
+          <button
+            type="button"
+            className="btn-primary-sm"
+            onClick={onDownloadAllSubjectsPngs}
+            disabled={
+              bulkPngBusy ||
+              loading ||
+              !semester ||
+              subjects.length === 0 ||
+              scopedRows.length === 0
+            }
+            title={
+              !semester
+                ? "Pick a semester first (not “All semesters”)."
+                : "Downloads bar + line chart PNG for every subject in this semester."
+            }
+          >
+            {bulkPngBusy ? "Exporting PNGs…" : "Download all subjects (PNG)"}
+          </button>
         </label>
       </div>
 

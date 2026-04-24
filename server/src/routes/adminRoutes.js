@@ -44,6 +44,7 @@ router.get("/grade-bands-xlsx", admin.getGradeBandsXlsx);
 
 router.get("/faculty", admin.listFaculty);
 router.get("/faculty/:userId/uploads", admin.listFacultyUploads);
+router.delete("/faculty/:userId", admin.deleteFaculty);
 router.post("/faculty", admin.createFaculty);
 router.patch("/faculty/:userId/subjects", admin.patchFacultySubjects);
 router.patch(

@@ -4,6 +4,7 @@ import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import { fetchUploadRecords } from "../../api/analyticsApi.js";
 import { listFaculty, listFacultyUploadsForAdmin } from "../../api/adminApi.js";
 import { parseRowsToSubjectData } from "../../utils/sheetParser.js";
+import { toFacultySelectOption } from "../../utils/facultySelect.js";
 import "../../styles/facultyPages.css";
 import "../../styles/adminPages.css";
 
@@ -126,13 +127,10 @@ export function AdminAnalyticsPage() {
           <SearchableSelect
             value={facultyId}
             onChange={setFacultyId}
-            options={facultyOptions.map((f) => ({
-              value: f.userId,
-              label: `${f.userId}${f.displayLabel ? ` — ${f.displayLabel}` : ""}`,
-            }))}
+            options={facultyOptions.map(toFacultySelectOption)}
             disabled={loading}
             placeholder="No Faculty Available"
-            searchPlaceholder="Search Faculty..."
+            searchPlaceholder="Search by name, email, or ID…"
           />
         </label>
         <label>
@@ -148,7 +146,7 @@ export function AdminAnalyticsPage() {
             }))}
             disabled={loading || uploads.length === 0}
             placeholder="No Uploads Available"
-            searchPlaceholder="Search Upload..."
+            searchPlaceholder="Search class, upload ID, or date…"
           />
         </label>
         <label>
@@ -159,7 +157,7 @@ export function AdminAnalyticsPage() {
             options={semesterOptions.map((s) => ({ value: s, label: s }))}
             disabled={loading}
             placeholder="All Semesters"
-            searchPlaceholder="Search Semester..."
+            searchPlaceholder="Type semester number…"
           />
         </label>
       </div>

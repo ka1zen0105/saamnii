@@ -1,4 +1,4 @@
-# Exam grade analysis
+# GradeX
 
 Full-stack app for uploading exam spreadsheets, storing marks in MongoDB, and viewing analytics (faculty and admin).
 

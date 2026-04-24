@@ -1,6 +1,23 @@
 import axios from "axios";
 
-const AUTH_STORAGE_KEY = "examgrade_auth";
+export const AUTH_STORAGE_KEY = "gradex_auth";
+const LEGACY_AUTH_STORAGE_KEY = "examgrade_auth";
+
+function migrateLegacyAuthStorage() {
+  if (typeof window === "undefined") return;
+  try {
+    if (localStorage.getItem(AUTH_STORAGE_KEY)) return;
+    const legacy = localStorage.getItem(LEGACY_AUTH_STORAGE_KEY);
+    if (legacy) {
+      localStorage.setItem(AUTH_STORAGE_KEY, legacy);
+      localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+migrateLegacyAuthStorage();
 
 /**
  * API origin. Set `VITE_API_URL` in `.env` (e.g. `http://localhost:3000`) for direct calls.

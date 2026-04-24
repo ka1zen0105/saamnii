@@ -93,6 +93,10 @@ export async function createFaculty(body) {
   return data;
 }
 
+export async function deleteFaculty(userId) {
+  return api.delete(`/api/admin/faculty/${encodeURIComponent(userId)}`);
+}
+
 export async function patchFacultySubjects(userId, subjectCodes) {
   const { data } = await api.patch(
     `/api/admin/faculty/${encodeURIComponent(userId)}/subjects`,

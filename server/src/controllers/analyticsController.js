@@ -716,7 +716,7 @@ export async function postHelpChat(req, res, next) {
       : ["llama3.1:latest", "llama3.1:8b", "llama3:latest"];
 
     const systemPrompt = [
-      "You are an in-app assistant for a College Examination Grading Analysis website.",
+      "You are an in-app assistant for GradeX, a college grading and analytics web app.",
       "Answer only with guidance related to this website's features and workflows.",
       `Current user role: ${role}. Never suggest routes outside this role.`,
       "If asked non-website things, politely redirect to website usage help.",

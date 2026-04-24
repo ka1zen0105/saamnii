@@ -1,21 +1,23 @@
+/* App shell — HelloLink-like page canvas (soft neutral + rounded surfaces) */
+
 .app-shell {
   display: block;
   min-height: 100vh;
-  padding: 0.9rem 1.1rem 1.1rem;
-  background: var(--bg-page);
+  padding: 0.9rem 1.1rem 1.25rem;
+  background: transparent;
   position: relative;
 }
 
 .app-main {
-  max-width: 1220px;
-  margin: 0.95rem auto 0;
-  padding: 1.45rem 1.65rem;
+  max-width: 1024px;
+  margin: 1rem auto 0;
+  padding: 1.5rem 1.65rem;
   overflow: auto;
-  border-radius: 1.15rem;
-  border: 1px solid var(--border-soft);
-  background: var(--bg-surface);
-  backdrop-filter: blur(10px);
-  box-shadow: var(--shadow-soft);
+  border-radius: 40px;
+  border: 1px solid rgba(18, 38, 58, 0.08);
+  border-top: 3px solid rgba(38, 203, 209, 0.5);
+  background: linear-gradient(180deg, #ffffff 0%, #fefcfa 55%, #faf7f5 100%);
+  box-shadow: var(--shadow-strong);
   position: relative;
 }
 
@@ -30,18 +32,23 @@
       to right,
       transparent 0,
       transparent 58px,
-      rgba(17, 17, 17, 0.035) 58px,
-      rgba(17, 17, 17, 0.035) 59px
+      rgba(18, 38, 58, 0.04) 58px,
+      rgba(18, 38, 58, 0.04) 59px
     );
-  opacity: 0.35;
+  opacity: 0.28;
 }
 
 .app-main h1 {
   margin: 0 0 0.5rem;
-  font-size: 1.45rem;
+  font-size: 1.5rem;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--hl-ink);
   letter-spacing: -0.02em;
+  background: none;
+  border: none;
+  padding: 0;
+  display: block;
+  width: auto;
 }
 
 .app-main h1,
@@ -50,63 +57,39 @@
 .app-main h4,
 .app-main h5,
 .app-main h6 {
-  display: inline-block;
-  width: fit-content;
-  padding: 0.16rem 0.62rem;
-  border-radius: 0.58rem;
-  background: linear-gradient(180deg, #fff7f0 0%, #ffefe2 100%);
-  border: 1px solid #ffd8bd;
+  display: block;
+  width: auto;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  border: none;
+}
+
+.app-main h2,
+.app-main h3,
+.app-main h4,
+.app-main h5,
+.app-main h6 {
+  margin: 0.75rem 0 0.35rem;
+  font-weight: 650;
+  color: var(--hl-ink);
+  letter-spacing: -0.02em;
 }
 
 .app-main p {
   margin: 0;
-  color: var(--text-muted);
+  color: var(--hl-muted);
   font-size: 0.9375rem;
 }
 
 @media (max-width: 900px) {
   .app-shell {
-    padding: 0.7rem 0.7rem 0.85rem;
+    padding: 0.7rem 0.7rem 0.9rem;
   }
 
   .app-main {
-    margin-top: 0.7rem;
-    padding: 1.05rem;
-    border-radius: 0.95rem;
+    margin-top: 0.75rem;
+    padding: 1.1rem;
+    border-radius: 28px;
   }
-}
-
-:root[data-theme="dark"] .app-shell {
-  background: var(--bg-page);
-}
-
-:root[data-theme="dark"] .app-main {
-  background: var(--bg-surface);
-  border-color: var(--border-soft);
-}
-
-:root[data-theme="dark"] .app-main::before {
-  background-image:
-    repeating-linear-gradient(
-      to right,
-      transparent 0,
-      transparent 58px,
-      rgba(255, 255, 255, 0.035) 58px,
-      rgba(255, 255, 255, 0.035) 59px
-    );
-}
-
-:root[data-theme="dark"] .app-main h1,
-:root[data-theme="dark"] .app-main h2,
-:root[data-theme="dark"] .app-main h3,
-:root[data-theme="dark"] .app-main h4,
-:root[data-theme="dark"] .app-main h5,
-:root[data-theme="dark"] .app-main h6 {
-  color: #f3f4f6;
-  background: linear-gradient(180deg, #2a221c 0%, #201913 100%);
-  border-color: #4f3d2f;
-}
-
-:root[data-theme="dark"] .app-main p {
-  color: var(--text-muted);
 }

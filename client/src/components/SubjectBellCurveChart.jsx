@@ -199,7 +199,7 @@ export function SubjectBellCurveChart({ parsedData, preferredSubjectCode = "" })
             onChange={setSubject}
             options={subjectOptions.map((s) => ({ value: s, label: subjectDisplayName(s) }))}
             placeholder="Select Subject"
-            searchPlaceholder="Search Subject..."
+            searchPlaceholder="Search code or subject name…"
           />
         </label>
         <button type="button" className="btn-png" onClick={onDownloadPng}>

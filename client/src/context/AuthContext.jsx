@@ -5,9 +5,9 @@ import {
   useMemo,
   useState,
 } from "react";
-import { api } from "../api/index.js";
+import { api, AUTH_STORAGE_KEY } from "../api/index.js";
 
-const STORAGE_KEY = "examgrade_auth";
+const STORAGE_KEY = AUTH_STORAGE_KEY;
 
 function decodeJwtPayload(token) {
   if (!token || typeof token !== "string") return null;

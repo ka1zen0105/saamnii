@@ -118,6 +118,11 @@ function mentorUserId(row) {
   return `mentor-${trim(row?.name).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 }
 
+function staticMentorUserIds() {
+  if (!Array.isArray(SE_ECS_FACULTY) || SE_ECS_FACULTY.length === 0) return new Set();
+  return new Set(SE_ECS_FACULTY.map((row) => mentorUserId(row)));
+}
+
 async function ensureMentorFacultyUsers() {
   if (!Array.isArray(SE_ECS_FACULTY) || SE_ECS_FACULTY.length === 0) return;
   const ops = SE_ECS_FACULTY.map((row) => {
@@ -762,6 +767,44 @@ export async function listFaculty(req, res, next) {
       )
       .lean();
     return res.json(users);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * DELETE /api/admin/faculty/:userId
+ * Removes the faculty user and all uploads + student marks tied to their uploadIds.
+ * Clears class teacher assignments pointing at this user.
+ */
+export async function deleteFaculty(req, res, next) {
+  try {
+    const userId = trim(req.params?.userId);
+    if (!userId) {
+      return res.status(400).json({ message: "userId required" });
+    }
+    if (staticMentorUserIds().has(userId)) {
+      return res.status(400).json({
+        message:
+          "This account is part of the built-in faculty roster and cannot be deleted here.",
+      });
+    }
+
+    const existing = await User.findOne({ userId, role: "faculty" });
+    if (!existing) {
+      return res.status(404).json({ message: "Faculty not found" });
+    }
+
+    const uploads = await Upload.find({ facultyId: userId }).select("uploadId").lean();
+    const uploadIds = uploads.map((u) => trim(u?.uploadId)).filter(Boolean);
+    if (uploadIds.length) {
+      await Student.deleteMany({ uploadId: { $in: uploadIds } });
+    }
+    await Upload.deleteMany({ facultyId: userId });
+    await SchoolClass.updateMany({ teacherUserId: userId }, { $set: { teacherUserId: "" } });
+    await User.deleteOne({ _id: existing._id });
+
+    return res.status(204).send();
   } catch (err) {
     next(err);
   }

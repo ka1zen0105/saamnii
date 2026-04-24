@@ -20,6 +20,7 @@ import "../../styles/adminPages.css";
 import { downloadElementAsPng } from "../../utils/exportPng.js";
 import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import { subjectDisplayName } from "../../utils/subjectLabel.js";
+import { toFacultySelectOption } from "../../utils/facultySelect.js";
 
 function BandCard({ subject }) {
   const cardRef = useRef(null);
@@ -169,12 +170,9 @@ export function AdminGradeBandsPage() {
               setClassLabel("");
               setSubjectCode("");
             }}
-            options={facultyOptions.map((f) => ({
-              value: f.userId,
-              label: `${f.userId}${f.displayLabel ? ` — ${f.displayLabel}` : ""}`,
-            }))}
+            options={facultyOptions.map(toFacultySelectOption)}
             placeholder="All Faculty"
-            searchPlaceholder="Search Faculty..."
+            searchPlaceholder="Search by name, email, or ID…"
           />
         </label>
         <label>
@@ -184,7 +182,7 @@ export function AdminGradeBandsPage() {
             onChange={setClassLabel}
             options={meta.classes.map((c) => ({ value: c, label: c }))}
             placeholder="All Classes"
-            searchPlaceholder="Search Class..."
+            searchPlaceholder="Search class label…"
           />
         </label>
         <label>
@@ -194,7 +192,7 @@ export function AdminGradeBandsPage() {
             onChange={setSubjectCode}
             options={meta.subjectCodes.map((c) => ({ value: c, label: subjectDisplayName(c) }))}
             placeholder="All Subjects (Pooled)"
-            searchPlaceholder="Search Subject..."
+            searchPlaceholder="Search code or subject name…"
           />
         </label>
         <button

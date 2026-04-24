@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createFaculty,
+  deleteFaculty,
   fetchAdminMeta,
   fetchSemesterSubjectCatalog,
   listFaculty,
@@ -11,6 +12,7 @@ import {
   uploadSemesterSubjectCatalog,
 } from "../../api/adminApi.js";
 import { SearchableSelect } from "../../components/SearchableSelect.jsx";
+import { toFacultySelectOption } from "../../utils/facultySelect.js";
 import "../../styles/facultyPages.css";
 import "../../styles/adminPages.css";
 
@@ -36,6 +38,7 @@ export function FacultyAccessPage() {
   const [catalogFile, setCatalogFile] = useState(null);
   const [catalogSemester, setCatalogSemester] = useState("1");
   const [catalogUploading, setCatalogUploading] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState("");
 
   const load = useCallback(async () => {
     setErr("");
@@ -218,6 +221,30 @@ export function FacultyAccessPage() {
     }
   }
 
+  async function onDeleteTeacher(u) {
+    const label = u.displayLabel || u.userId;
+    const confirmed = window.confirm(
+      `Delete teacher "${label}" (${u.userId})?\n\n` +
+        "This removes the faculty account and permanently deletes all of their uploads and every student mark row tied to those uploads. Any class with this user as assigned teacher will have that field cleared.\n\n" +
+        "This cannot be undone."
+    );
+    if (!confirmed) return;
+    setErr("");
+    setDeletingUserId(u.userId);
+    try {
+      await deleteFaculty(u.userId);
+      flash("Teacher removed.");
+      if (allocationUserId === u.userId) {
+        setAllocationUserId("");
+      }
+      await load();
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Could not delete teacher.");
+    } finally {
+      setDeletingUserId("");
+    }
+  }
+
   async function onDownloadTemplate() {
     try {
       const blob = await downloadSemesterSubjectCatalogTemplate();
@@ -260,6 +287,7 @@ export function FacultyAccessPage() {
                   <th>Contact</th>
                   <th>Subject codes</th>
                   <th>Assigned classes</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -273,6 +301,16 @@ export function FacultyAccessPage() {
                     <td>{u.contact || "—"}</td>
                     <td>{renderChips(u.subjectCodes)}</td>
                     <td>{renderChips(u.assignedClasses)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn-danger faculty-access-delete"
+                        disabled={Boolean(deletingUserId)}
+                        onClick={() => onDeleteTeacher(u)}
+                      >
+                        {deletingUserId === u.userId ? "Removing…" : "Delete"}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -357,7 +395,7 @@ export function FacultyAccessPage() {
                     }))}
                     disabled={catalogUploading}
                     placeholder="Select Semester"
-                    searchPlaceholder="Search Semester..."
+                    searchPlaceholder="Type semester number…"
                   />
                 </label>
                 <label>
@@ -391,13 +429,10 @@ export function FacultyAccessPage() {
                   <SearchableSelect
                     value={allocationUserId}
                     onChange={setAllocationUserId}
-                    options={faculty.map((u) => ({
-                      value: u.userId,
-                      label: u.displayLabel || u.userId,
-                    }))}
+                    options={faculty.map(toFacultySelectOption)}
                     disabled={!faculty.length}
                     placeholder="No Faculty Yet"
-                    searchPlaceholder="Search Faculty..."
+                    searchPlaceholder="Search by name, email, or ID…"
                   />
                 </label>
                 <label>
@@ -414,7 +449,7 @@ export function FacultyAccessPage() {
                     }))}
                     disabled={!faculty.length}
                     placeholder="Select Semester"
-                    searchPlaceholder="Search Semester..."
+                    searchPlaceholder="Type semester number…"
                   />
                 </label>
                 <label>

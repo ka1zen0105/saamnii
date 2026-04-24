@@ -1,4 +1,6 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Onest:wght@100..900&family=Outfit:wght@300..900&display=swap");
+
+/* Light: Parchment, Peach, Cyan, Aquamarine, Deep blue */
 
 *,
 *::before,
@@ -6,44 +8,71 @@
   box-sizing: border-box;
 }
 
+/* Brand palette — Parchment, Peach Glow, Strong Cyan, Aquamarine, Deep Space Blue */
 :root {
-  font-family: "Manrope", "Segoe UI", Roboto, sans-serif;
+  --brand-parchment: #f4edea;
+  --brand-peach: #f0c79f;
+  --brand-peach-deep: #e2b48a;
+  --brand-cyan: #26cbd1;
+  --brand-cyan-hover: #1fb4ba;
+  --brand-cyan-muted: rgba(38, 203, 209, 0.14);
+  --brand-aqua: #97eece;
+  --brand-aqua-deep: #6dd4b0;
+  --brand-deep: #12263a;
+  --brand-deep-mid: #1a3349;
+  --brand-deep-soft: #1e3d52;
+  --on-accent: var(--brand-deep);
+
+  /* Semantic aliases (used across layouts + legacy --hl-* from HelloLink-era markup) */
+  --hl-ink: var(--brand-deep);
+  --hl-muted: #4a5f72;
+  --hl-muted-strong: #2a4154;
+  --hl-page: var(--brand-parchment);
+  /* Warm elevated surfaces (still high contrast on parchment) */
+  --hl-surface: #fefcfa;
+  --hl-surface-2: #ebe4df;
+  --hl-cambridge: var(--brand-aqua);
+  --hl-cambridge-deep: var(--brand-aqua-deep);
+  --hl-tangerine: var(--brand-peach);
+  --hl-tangerine-hover: var(--brand-peach-deep);
+  --hl-wenge: var(--brand-deep);
+  --hl-wenge-hover: var(--brand-deep-soft);
+  --hl-lavender: #d4f5ef;
+  --hl-lavender-hover: #c0efe6;
+  --hl-border-soft: rgba(18, 38, 58, 0.1);
+  --hl-border-focus: rgba(38, 203, 209, 0.45);
+  --hl-shadow-rgb: 18, 38, 58;
+
+  font-family: "Onest", "Segoe UI", system-ui, sans-serif;
   line-height: 1.5;
-  color: #27272a;
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      #ffffff 0,
-      #ffffff 22px,
-      #f6f6f6 22px,
-      #f6f6f6 24px
-    );
+  color: var(--hl-ink);
+  background: var(--hl-page);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --bg-page:
-    repeating-linear-gradient(
-      -45deg,
-      #ffffff 0,
-      #ffffff 22px,
-      #f6f6f6 22px,
-      #f6f6f6 24px
-    );
-  --bg-surface: rgba(255, 255, 255, 0.92);
-  --bg-surface-strong: #ffffff;
-  --text-primary: #111111;
-  --text-muted: #60646c;
-  --border-soft: #ececec;
-  --border-strong: #dddddf;
-  --shadow-soft: 0 10px 28px rgba(17, 17, 17, 0.06);
-  --shadow-strong: 0 14px 36px rgba(17, 17, 17, 0.12);
-  --accent-gradient: linear-gradient(135deg, #ff7a00 0%, #ff9400 52%, #ffb21a 100%);
-  --accent-gradient-hover: linear-gradient(135deg, #ff8600 0%, #ffa300 52%, #ffc233 100%);
-  --accent: #ff8c00;
-  --accent-soft: #fff4dd;
-  --success-soft: #ecfdf3;
-  --error-soft: #fff3f3;
+
+  --bg-page: var(--hl-page);
+  --bg-surface: rgba(254, 252, 250, 0.97);
+  --bg-surface-strong: var(--hl-surface);
+  --text-primary: var(--hl-ink);
+  --text-muted: var(--hl-muted);
+  --border-soft: var(--hl-border-soft);
+  --border-strong: rgba(18, 38, 58, 0.18);
+  --shadow-soft:
+    0 1px 0 rgba(255, 255, 255, 0.65),
+    0 4px 6px -2px rgba(var(--hl-shadow-rgb), 0.05),
+    0 22px 48px -12px rgba(var(--hl-shadow-rgb), 0.12);
+  --shadow-strong:
+    0 1px 0 rgba(255, 255, 255, 0.55),
+    0 8px 16px -4px rgba(var(--hl-shadow-rgb), 0.08),
+    0 28px 56px -16px rgba(var(--hl-shadow-rgb), 0.16);
+  --accent: var(--brand-cyan);
+  --accent-soft: var(--brand-cyan-muted);
+  --accent-gradient: linear-gradient(135deg, var(--brand-cyan) 0%, #5ee3e8 100%);
+  --accent-gradient-hover: linear-gradient(135deg, var(--brand-cyan-hover) 0%, var(--brand-cyan) 100%);
+  --success-soft: rgba(151, 238, 206, 0.35);
+  --error-soft: #fdeeed;
 }
 
 body,
@@ -63,49 +92,42 @@ a,
 label,
 th,
 td {
-  font-family: "Manrope", "Segoe UI", Roboto, sans-serif;
+  font-family: "Onest", "Segoe UI", system-ui, sans-serif;
 }
 
 body {
   margin: 0;
-  background: var(--bg-page);
-  color: var(--text-primary);
+  background-color: var(--brand-parchment);
+  background-image:
+    radial-gradient(120% 80% at 100% 0%, rgba(38, 203, 209, 0.12) 0%, transparent 55%),
+    radial-gradient(90% 70% at 0% 100%, rgba(240, 199, 159, 0.35) 0%, transparent 50%),
+    radial-gradient(70% 50% at 50% 100%, rgba(151, 238, 206, 0.18) 0%, transparent 45%),
+    linear-gradient(180deg, #faf6f3 0%, var(--brand-parchment) 38%, #ebe4df 100%);
+  background-attachment: fixed;
+  color: var(--hl-ink);
 }
 
 #root {
   min-height: 100vh;
 }
 
-:root[data-theme="dark"] {
-  color: #e5e7eb;
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      #101014 0,
-      #101014 22px,
-      #141419 22px,
-      #141419 24px
-    );
-  --bg-page:
-    repeating-linear-gradient(
-      -45deg,
-      #101014 0,
-      #101014 22px,
-      #141419 22px,
-      #141419 24px
-    );
-  --bg-surface: rgba(19, 19, 24, 0.92);
-  --bg-surface-strong: #17171d;
-  --text-primary: #f5f5f5;
-  --text-muted: #a2a7b3;
-  --border-soft: #2a2b33;
-  --border-strong: #373947;
-  --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.45);
-  --shadow-strong: 0 18px 42px rgba(0, 0, 0, 0.55);
-  --accent-soft: #3a2712;
+*::-webkit-scrollbar {
+  height: 13px;
+  width: 13px;
 }
 
-:root[data-theme="dark"] body {
-  background: var(--bg-page);
-  color: #e5e7eb;
+*::-webkit-scrollbar-track {
+  border-radius: 0;
+  background-color: rgba(18, 38, 58, 0.06);
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(38, 203, 209, 0.42);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--brand-cyan-hover);
 }
