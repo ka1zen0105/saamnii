@@ -1,24 +1,31 @@
 .helpbot-root {
   position: fixed;
-  right: 1.2rem;
-  bottom: 1.2rem;
+  right: 1.4rem;
+  bottom: 1.4rem;
   z-index: 60;
 }
 
 .helpbot-fab {
   border: none;
   border-radius: 999px;
-  background: #2563eb;
+  background: #111111;
   color: #fff;
-  width: 2.7rem;
-  height: 2.7rem;
+  width: 3rem;
+  height: 3rem;
   font-weight: 600;
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.28);
+  box-shadow: 0 12px 26px rgba(17, 17, 17, 0.28);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.helpbot-fab:hover {
+  transform: translateY(-1px);
+  background: #000;
+  box-shadow: 0 16px 30px rgba(17, 17, 17, 0.34);
 }
 
 .sr-only {
@@ -36,33 +43,34 @@
 .helpbot-panel {
   width: min(360px, calc(100vw - 2.4rem));
   height: 460px;
-  border: 1px solid #dbe7f7;
-  border-radius: 0.9rem;
-  background: #fff;
-  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.22);
+  border: 1px solid var(--border-soft);
+  border-radius: 1rem;
+  background: var(--bg-surface-strong);
+  box-shadow: var(--shadow-strong);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  margin-bottom: 0.7rem;
+  margin-bottom: 0.8rem;
+  backdrop-filter: blur(8px);
 }
 
 .helpbot-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #e5edf8;
-  padding: 0.7rem 0.8rem;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 0.75rem 0.9rem;
   font-size: 0.86rem;
-  color: #1f2937;
+  color: var(--text-primary);
 }
 
 .helpbot-close {
-  border: 1px solid #d1d5db;
-  border-radius: 0.45rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.55rem;
   background: #fff;
-  color: #334155;
+  color: var(--text-primary);
   font-size: 0.76rem;
-  padding: 0.25rem 0.45rem;
+  padding: 0.27rem 0.5rem;
   cursor: pointer;
 }
 
@@ -73,7 +81,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
-  background: #f8fbff;
+  background: #fafafa;
 }
 
 .helpbot-msg {
@@ -89,13 +97,13 @@
 }
 
 .helpbot-msg.is-bot {
-  background: #e9f2ff;
-  color: #1e3a8a;
+  background: #f2f2f3;
+  color: #222;
   align-self: flex-start;
 }
 
 .helpbot-msg.is-user {
-  background: #2563eb;
+  background: var(--accent-gradient);
   color: #fff;
   align-self: flex-end;
 }
@@ -110,9 +118,9 @@
 .helpbot-link {
   text-decoration: none;
   font-size: 0.75rem;
-  border: 1px solid #93c5fd;
+  border: 1px solid #ffd0ad;
   background: #fff;
-  color: #1d4ed8;
+  color: #c54f00;
   border-radius: 999px;
   padding: 0.18rem 0.5rem;
 }
@@ -120,23 +128,23 @@
 .helpbot-input {
   display: flex;
   gap: 0.45rem;
-  border-top: 1px solid #e5edf8;
+  border-top: 1px solid var(--border-soft);
   padding: 0.65rem;
   background: #fff;
 }
 
 .helpbot-input input {
   flex: 1;
-  border: 1px solid #d1d5db;
-  border-radius: 0.45rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.55rem;
   padding: 0.45rem 0.55rem;
   font-size: 0.8rem;
 }
 
 .helpbot-input button {
   border: none;
-  border-radius: 0.45rem;
-  background: #1d4ed8;
+  border-radius: 0.55rem;
+  background: #111111;
   color: #fff;
   font-size: 0.77rem;
   padding: 0.42rem 0.65rem;
@@ -144,28 +152,33 @@
 }
 
 :root[data-theme="dark"] .helpbot-panel {
-  background: #111827;
-  border-color: #374151;
+  background: #17171d;
+  border-color: var(--border-soft);
 }
 
 :root[data-theme="dark"] .helpbot-head {
   color: #e5e7eb;
-  border-bottom-color: #374151;
+  border-bottom-color: var(--border-soft);
 }
 
 :root[data-theme="dark"] .helpbot-messages {
-  background: #0f172a;
+  background: #13141a;
 }
 
 :root[data-theme="dark"] .helpbot-msg.is-bot {
-  background: #1e3a8a;
-  color: #dbeafe;
+  background: #22242e;
+  color: #e5e7eb;
 }
 
 :root[data-theme="dark"] .helpbot-close,
 :root[data-theme="dark"] .helpbot-input input {
-  background: #1f2937;
-  border-color: #4b5563;
+  background: #1d1e25;
+  border-color: var(--border-strong);
   color: #e5e7eb;
+}
+
+:root[data-theme="dark"] .helpbot-input {
+  background: #17171d;
+  border-top-color: var(--border-soft);
 }
 

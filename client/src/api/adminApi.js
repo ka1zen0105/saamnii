@@ -40,6 +40,25 @@ export async function fetchSemesterSubjectCatalog() {
   return data?.semesters ?? [];
 }
 
+export async function uploadSemesterSubjectCatalog(file, semester) {
+  const form = new FormData();
+  form.append("file", file);
+  if (semester != null && String(semester).trim() !== "") {
+    form.append("semester", String(semester));
+  }
+  const { data } = await api.post("/api/admin/semester-subject-catalog/upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function downloadSemesterSubjectCatalogTemplate() {
+  const { data } = await api.get("/api/admin/semester-subject-catalog/template", {
+    responseType: "blob",
+  });
+  return data;
+}
+
 export async function fetchReviewRows(params) {
   const { data } = await api.get("/api/admin/review-rows", { params });
   return data;

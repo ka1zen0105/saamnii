@@ -8,7 +8,7 @@ const LINKS = [
   { to: "/faculty/dashboard", label: "Dashboard" },
   { to: "/faculty/upload", label: "Upload" },
   { to: "/faculty/analytics", label: "Analytics" },
-  { to: "/faculty/grade-bands", label: "Grade bands" },
+  { to: "/faculty/grade-bands", label: "Grade Bands" },
   { to: "/faculty/profile", label: "Profile" },
 ];
 

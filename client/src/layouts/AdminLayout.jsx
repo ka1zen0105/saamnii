@@ -8,7 +8,7 @@ const LINKS = [
   { to: "/admin/dashboard", label: "Dashboard" },
   { to: "/admin/analysis-of-students", label: "Grade Band" },
   { to: "/admin/analytics", label: "Analytics" },
-  { to: "/admin/faculty-access", label: "Faculty access" },
+  { to: "/admin/faculty-access", label: "Faculty Access" },
 ];
 
 export function AdminLayout() {

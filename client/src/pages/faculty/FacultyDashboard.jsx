@@ -22,6 +22,8 @@ import {
 } from "../../api/analyticsApi.js";
 import { fetchMyProfile } from "../../api/facultyApi.js";
 import { addNormalCurveOverlay } from "../../lib/bellCurve.js";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
+import { subjectDisplayName } from "../../utils/subjectLabel.js";
 import "../../styles/facultyPages.css";
 
 function mean(nums) {
@@ -154,31 +156,26 @@ export function FacultyDashboard() {
       <div className="faculty-toolbar">
         <label>
           Class
-          <select
+          <SearchableSelect
             value={classLabel}
-            onChange={(e) => setClassLabel(e.target.value)}
-          >
-            <option value="">{isAdmin ? "All classes" : "All assigned classes"}</option>
-            {classes.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+            onChange={setClassLabel}
+            options={classes.map((c) => ({ value: c, label: c }))}
+            placeholder={isAdmin ? "All Classes" : "All Assigned Classes"}
+            searchPlaceholder="Search Class..."
+          />
         </label>
         <label>
           Bell curve subject
-          <select
+          <SearchableSelect
             value={bellSubject}
-            onChange={(e) => setBellSubject(e.target.value)}
-          >
-            <option value="">Select subject</option>
-            {subjectBars.map((s) => (
-              <option key={s.subjectCode || s.subjectName} value={s.subjectCode}>
-                {s.subjectCode ? `${s.subjectCode} — ${s.subjectName}` : s.subjectName}
-              </option>
-            ))}
-          </select>
+            onChange={setBellSubject}
+            options={subjectBars.map((s) => ({
+              value: s.subjectCode,
+              label: subjectDisplayName(s.subjectName || s.subjectCode),
+            }))}
+            placeholder="Select Subject"
+            searchPlaceholder="Search Subject..."
+          />
         </label>
       </div>
 

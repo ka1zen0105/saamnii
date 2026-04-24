@@ -13,13 +13,13 @@
   font-size: 1.5rem;
   font-weight: 700;
   letter-spacing: -0.03em;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .landing-tagline {
   margin: 0.5rem 0 0;
   font-size: 0.9375rem;
-  color: #6b7280;
+  color: var(--text-muted);
 }
 
 .landing-error {
@@ -53,24 +53,32 @@
 }
 
 .landing-card {
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 0.5rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 1rem;
   padding: 1.5rem;
   text-align: left;
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-soft);
 }
 
 .landing-card-title {
   margin: 0 0 0.5rem;
   font-size: 1.125rem;
   font-weight: 600;
-  color: #111827;
+  color: var(--text-primary);
+  display: inline-block;
+  width: fit-content;
+  padding: 0.16rem 0.62rem;
+  border-radius: 0.58rem;
+  background: linear-gradient(180deg, #fff7f0 0%, #ffefe2 100%);
+  border: 1px solid #ffd8bd;
 }
 
 .landing-card-desc {
   margin: 0 0 1.25rem;
   font-size: 0.875rem;
-  color: #6b7280;
+  color: var(--text-muted);
 }
 
 .landing-form {
@@ -82,21 +90,21 @@
 .landing-label {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: #374151;
+  color: var(--text-primary);
 }
 
 .landing-input {
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
-  border-radius: 0.375rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.65rem;
   font-size: 0.9375rem;
   color: #111827;
 }
 
 .landing-input:focus {
   outline: none;
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(79, 124, 255, 0.18);
 }
 
 .landing-input:disabled {
@@ -107,8 +115,8 @@
   margin-top: 0.25rem;
   padding: 0.625rem 1rem;
   border: none;
-  border-radius: 0.375rem;
-  background: #2563eb;
+  border-radius: 0.65rem;
+  background: #111111;
   color: #fff;
   font-size: 0.9375rem;
   font-weight: 600;
@@ -116,7 +124,7 @@
 }
 
 .landing-submit:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: #000000;
 }
 
 .landing-submit:disabled {
@@ -125,11 +133,11 @@
 }
 
 .landing-submit-secondary {
-  background: #1e40af;
+  background: var(--accent-gradient);
 }
 
 .landing-submit-secondary:hover:not(:disabled) {
-  background: #1e3a8a;
+  background: var(--accent-gradient-hover);
 }
 
 :root[data-theme="dark"] .landing-logo {
@@ -149,6 +157,8 @@
 
 :root[data-theme="dark"] .landing-card-title {
   color: #f3f4f6;
+  background: linear-gradient(180deg, #2a221c 0%, #201913 100%);
+  border-color: #4f3d2f;
 }
 
 :root[data-theme="dark"] .landing-input,

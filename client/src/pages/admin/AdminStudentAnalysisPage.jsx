@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -15,6 +15,9 @@ import { fetchUploadRecords } from "../../api/analyticsApi.js";
 import { listFaculty, listFacultyUploadsForAdmin } from "../../api/adminApi.js";
 import "../../styles/facultyPages.css";
 import "../../styles/adminPages.css";
+import { downloadElementAsPng } from "../../utils/exportPng.js";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
+import { subjectDisplayName } from "../../utils/subjectLabel.js";
 
 const GRADE_ORDER = ["O", "A", "B", "C", "D", "E", "P", "F"];
 
@@ -108,6 +111,8 @@ function buildExamGradeDistribution(rows) {
 }
 
 export function AdminStudentAnalysisPage() {
+  const barCaptureRef = useRef(null);
+  const lineCaptureRef = useRef(null);
   const [faculty, setFaculty] = useState([]);
   const [facultyId, setFacultyId] = useState("");
   const [uploads, setUploads] = useState([]);
@@ -232,6 +237,14 @@ export function AdminStudentAnalysisPage() {
     }
   }
 
+  async function onDownloadBarPng() {
+    await downloadElementAsPng(barCaptureRef.current, `${subject}-admin-grade-band-bar`);
+  }
+
+  async function onDownloadLinePng() {
+    await downloadElementAsPng(lineCaptureRef.current, `${subject}-admin-grade-band-polygon`);
+  }
+
   return (
     <div className="faculty-page admin-page">
       <h1>Grade Band</h1>
@@ -240,61 +253,55 @@ export function AdminStudentAnalysisPage() {
       <div className="faculty-toolbar">
         <label>
           Faculty
-          <select value={facultyId} onChange={(e) => setFacultyId(e.target.value)} disabled={loading}>
-            {faculty.length === 0 ? (
-              <option value="">No faculty available</option>
-            ) : (
-              faculty.map((f) => (
-                <option key={f.userId} value={f.userId}>
-                  {f.userId}
-                  {f.displayLabel ? ` — ${f.displayLabel}` : ""}
-                </option>
-              ))
-            )}
-          </select>
+          <SearchableSelect
+            value={facultyId}
+            onChange={setFacultyId}
+            options={faculty.map((f) => ({
+              value: f.userId,
+              label: `${f.userId}${f.displayLabel ? ` — ${f.displayLabel}` : ""}`,
+            }))}
+            disabled={loading}
+            placeholder="No Faculty Available"
+            searchPlaceholder="Search Faculty..."
+          />
         </label>
         <label>
           Uploaded dataset
-          <select
+          <SearchableSelect
             value={uploadId}
-            onChange={(e) => onSelectUpload(e.target.value)}
+            onChange={onSelectUpload}
+            options={uploads.map((u) => ({
+              value: u.uploadId,
+              label: `${u.classLabel || "Class?"} • ${u.uploadId} • ${new Date(
+                u.createdAt
+              ).toLocaleString()}`,
+            }))}
             disabled={loading || uploads.length === 0}
-          >
-            {uploads.length === 0 ? (
-              <option value="">No uploads available</option>
-            ) : (
-              uploads.map((u) => (
-                <option key={u.uploadId} value={u.uploadId}>
-                  {u.classLabel || "Class?"} • {u.uploadId} • {new Date(u.createdAt).toLocaleString()}
-                </option>
-              ))
-            )}
-          </select>
+            placeholder="No Uploads Available"
+            searchPlaceholder="Search Upload..."
+          />
         </label>
         <label>
           Semester
-          <select value={semester} onChange={(e) => setSemester(e.target.value)} disabled={loading}>
-            <option value="">All semesters</option>
-            {semesterOptions.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={semester}
+            onChange={setSemester}
+            options={semesterOptions.map((s) => ({ value: s, label: s }))}
+            disabled={loading}
+            placeholder="All Semesters"
+            searchPlaceholder="Search Semester..."
+          />
         </label>
         <label>
           Subject
-          <select value={subject} onChange={(e) => setSubject(e.target.value)} disabled={loading || subjects.length === 0}>
-            {subjects.length === 0 ? (
-              <option value="">No subject data</option>
-            ) : (
-              subjects.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))
-            )}
-          </select>
+          <SearchableSelect
+            value={subject}
+            onChange={setSubject}
+            options={subjects.map((s) => ({ value: s, label: subjectDisplayName(s) }))}
+            disabled={loading || subjects.length === 0}
+            placeholder="No Subject Data"
+            searchPlaceholder="Search Subject..."
+          />
         </label>
       </div>
 
@@ -314,8 +321,15 @@ export function AdminStudentAnalysisPage() {
         <p className="sub">No subject data found for selected upload.</p>
       ) : (
         <section className="grade-band-block">
-            <div className="chart-card" style={{ border: "none", marginBottom: "1rem" }}>
-              <h2 style={{ fontSize: "1.05rem", textAlign: "center", fontWeight: 700 }}>{subject}</h2>
+            <div className="chart-card" style={{ border: "none", marginBottom: "1rem" }} ref={barCaptureRef}>
+              <h2 style={{ fontSize: "1.05rem", textAlign: "center", fontWeight: 700 }}>
+                {subjectDisplayName(subject)}
+              </h2>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <button type="button" className="btn-png" onClick={onDownloadBarPng}>
+                  Download PNG
+                </button>
+              </div>
               <div className="chart-wrap" style={{ height: 340 }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
@@ -333,10 +347,15 @@ export function AdminStudentAnalysisPage() {
               </div>
             </div>
 
-            <div className="chart-card" style={{ border: "none", marginBottom: 0 }}>
+            <div className="chart-card" style={{ border: "none", marginBottom: 0 }} ref={lineCaptureRef}>
               <h2 style={{ fontSize: "1rem", textAlign: "center", fontWeight: 700 }}>
                 Frequency polygon (same distribution)
               </h2>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <button type="button" className="btn-png" onClick={onDownloadLinePng}>
+                  Download PNG
+                </button>
+              </div>
               <div className="chart-wrap" style={{ height: 340 }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>

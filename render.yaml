@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: saamnii-api
+    env: node
+    rootDir: server
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SEED_FACULTY_PASSWORD
+        sync: false
+      - key: SUBJECT_TEMPLATE_PATH
+        sync: false

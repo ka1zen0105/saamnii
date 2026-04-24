@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchMyProfile, patchMyProfile } from "../../api/facultyApi.js";
 import { useTheme } from "../../context/ThemeContext.jsx";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import "../../styles/facultyPages.css";
 
 export function ProfilePage() {
@@ -112,8 +113,8 @@ export function ProfilePage() {
 
   return (
     <div className="faculty-page">
-      <h1>Faculty profile</h1>
-      <p className="sub">Manage your profile details and password.</p>
+      <h1>Faculty Profile</h1>
+      <p className="sub">Manage Your Profile Details and Password.</p>
 
       {banner.type ? (
         <div
@@ -136,20 +137,20 @@ export function ProfilePage() {
 
           <div className="profile-actions">
             <button type="button" className="btn-muted" onClick={load} disabled={saving}>
-              Refresh profile
+              Refresh Profile
             </button>
             <button type="button" className="btn-muted" onClick={resetEditableFields} disabled={saving}>
-              Reset form
+              Reset Form
             </button>
             <button type="button" className="btn-danger" onClick={clearLocalSelections} disabled={saving}>
-              Clear local upload selection
+              Clear Local Upload Selection
             </button>
           </div>
 
           <form className="faculty-form-grid" onSubmit={onSubmit}>
             <fieldset>
-              <legend>Edit profile</legend>
-              <label htmlFor="profile-displayLabel">Display name</label>
+              <legend>Edit Profile</legend>
+              <label htmlFor="profile-displayLabel">Display Name</label>
               <input
                 id="profile-displayLabel"
                 name="displayLabel"
@@ -177,7 +178,7 @@ export function ProfilePage() {
                 disabled={saving}
               />
 
-              <label htmlFor="profile-currentPassword">Current password (required to change password)</label>
+              <label htmlFor="profile-currentPassword">Current Password (Required to Change Password)</label>
               <input
                 id="profile-currentPassword"
                 name="currentPassword"
@@ -188,7 +189,7 @@ export function ProfilePage() {
                 placeholder="Enter current password"
               />
 
-              <label htmlFor="profile-newPassword">New password (optional)</label>
+              <label htmlFor="profile-newPassword">New Password (Optional)</label>
               <input
                 id="profile-newPassword"
                 name="newPassword"
@@ -199,7 +200,7 @@ export function ProfilePage() {
                 placeholder="At least 6 characters"
               />
 
-              <label htmlFor="profile-confirmPassword">Confirm new password</label>
+              <label htmlFor="profile-confirmPassword">Confirm New Password</label>
               <input
                 id="profile-confirmPassword"
                 name="confirmPassword"
@@ -210,25 +211,27 @@ export function ProfilePage() {
               />
 
               <button type="submit" className="btn-primary-sm" disabled={saving}>
-                {saving ? "Saving…" : "Save profile"}
+                {saving ? "Saving…" : "Save Profile"}
               </button>
             </fieldset>
 
             <fieldset>
               <legend>Preferences</legend>
               <label htmlFor="profile-theme">Theme</label>
-              <select
-                id="profile-theme"
+              <SearchableSelect
                 value={theme}
-                onChange={(e) => setTheme(e.target.value === "dark" ? "dark" : "light")}
+                onChange={(v) => setTheme(v === "dark" ? "dark" : "light")}
+                options={[
+                  { value: "light", label: "Light" },
+                  { value: "dark", label: "Dark" },
+                ]}
                 disabled={saving}
-              >
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-              </select>
+                placeholder="Select Theme"
+                searchPlaceholder="Search Theme..."
+              />
 
               <p className="faculty-allocation-hint" style={{ marginTop: "0.6rem" }}>
-                Theme preference is saved on this device.
+                Theme Preference Is Saved on This Device.
               </p>
             </fieldset>
           </form>

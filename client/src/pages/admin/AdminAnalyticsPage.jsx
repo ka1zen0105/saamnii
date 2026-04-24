@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { SubjectBellCurveChart } from "../../components/SubjectBellCurveChart.jsx";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import { fetchUploadRecords } from "../../api/analyticsApi.js";
 import { listFaculty, listFacultyUploadsForAdmin } from "../../api/adminApi.js";
 import { parseRowsToSubjectData } from "../../utils/sheetParser.js";
@@ -122,46 +123,44 @@ export function AdminAnalyticsPage() {
       <div className="faculty-toolbar">
         <label>
           Faculty
-          <select value={facultyId} onChange={(e) => setFacultyId(e.target.value)} disabled={loading}>
-            {facultyOptions.length === 0 ? (
-              <option value="">No faculty available</option>
-            ) : null}
-            {facultyOptions.map((f) => (
-              <option key={f.userId} value={f.userId}>
-                {f.userId}
-                {f.displayLabel ? ` — ${f.displayLabel}` : ""}
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={facultyId}
+            onChange={setFacultyId}
+            options={facultyOptions.map((f) => ({
+              value: f.userId,
+              label: `${f.userId}${f.displayLabel ? ` — ${f.displayLabel}` : ""}`,
+            }))}
+            disabled={loading}
+            placeholder="No Faculty Available"
+            searchPlaceholder="Search Faculty..."
+          />
         </label>
         <label>
           Uploaded dataset
-          <select
+          <SearchableSelect
             value={uploadId}
-            onChange={(e) => onSelectUpload(e.target.value)}
+            onChange={onSelectUpload}
+            options={uploads.map((u) => ({
+              value: u.uploadId,
+              label: `${u.classLabel || "Class?"} • ${u.uploadId} • ${new Date(
+                u.createdAt
+              ).toLocaleString()}`,
+            }))}
             disabled={loading || uploads.length === 0}
-          >
-            {uploads.length === 0 ? (
-              <option value="">No uploads available</option>
-            ) : (
-              uploads.map((u) => (
-                <option key={u.uploadId} value={u.uploadId}>
-                  {u.classLabel || "Class?"} • {u.uploadId} • {new Date(u.createdAt).toLocaleString()}
-                </option>
-              ))
-            )}
-          </select>
+            placeholder="No Uploads Available"
+            searchPlaceholder="Search Upload..."
+          />
         </label>
         <label>
           Semester
-          <select value={semester} onChange={(e) => setSemester(e.target.value)} disabled={loading}>
-            <option value="">All semesters</option>
-            {semesterOptions.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={semester}
+            onChange={setSemester}
+            options={semesterOptions.map((s) => ({ value: s, label: s }))}
+            disabled={loading}
+            placeholder="All Semesters"
+            searchPlaceholder="Search Semester..."
+          />
         </label>
       </div>
 

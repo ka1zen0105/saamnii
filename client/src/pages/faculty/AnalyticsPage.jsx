@@ -4,6 +4,7 @@ import { SubjectBellCurveChart } from "../../components/SubjectBellCurveChart.js
 import { PsychometricTable } from "../../components/PsychometricTable";
 import { CompetencyRadar } from "../../components/CompetencyRadar";
 import { GraderVarianceAlert } from "../../components/GraderVarianceAlert";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import { useGradingAnalytics } from "../../hooks/useGradingAnalytics";
 import { parseRowsToSubjectData } from "../../utils/sheetParser.js";
 import "../../styles/facultyPages.css";
@@ -136,21 +137,19 @@ export function AnalyticsPage() {
       <div className="faculty-toolbar">
         <label>
           Uploaded dataset
-          <select
+          <SearchableSelect
             value={currentUploadId}
-            onChange={(e) => onSelectUpload(e.target.value)}
+            onChange={onSelectUpload}
+            options={uploads.map((u) => ({
+              value: u.uploadId,
+              label: `${u.classLabel || "Class?"} • ${u.uploadId} • ${new Date(
+                u.createdAt
+              ).toLocaleString()}`,
+            }))}
             disabled={loading || uploads.length === 0}
-          >
-            {uploads.length === 0 ? (
-              <option value="">No uploads available</option>
-            ) : (
-              uploads.map((u) => (
-                <option key={u.uploadId} value={u.uploadId}>
-                  {u.classLabel || "Class?"} • {u.uploadId} • {new Date(u.createdAt).toLocaleString()}
-                </option>
-              ))
-            )}
-          </select>
+            placeholder="No Uploads Available"
+            searchPlaceholder="Search Upload..."
+          />
         </label>
       </div>
 

@@ -1,3 +1,5 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+
 *,
 *::before,
 *::after {
@@ -5,20 +7,69 @@
 }
 
 :root {
-  font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+  font-family: "Manrope", "Segoe UI", Roboto, sans-serif;
   line-height: 1.5;
-  color: #263a53;
-  background: #e9f1fb;
+  color: #27272a;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      #ffffff 0,
+      #ffffff 22px,
+      #f6f6f6 22px,
+      #f6f6f6 24px
+    );
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  --bg-page:
+    repeating-linear-gradient(
+      -45deg,
+      #ffffff 0,
+      #ffffff 22px,
+      #f6f6f6 22px,
+      #f6f6f6 24px
+    );
+  --bg-surface: rgba(255, 255, 255, 0.92);
+  --bg-surface-strong: #ffffff;
+  --text-primary: #111111;
+  --text-muted: #60646c;
+  --border-soft: #ececec;
+  --border-strong: #dddddf;
+  --shadow-soft: 0 10px 28px rgba(17, 17, 17, 0.06);
+  --shadow-strong: 0 14px 36px rgba(17, 17, 17, 0.12);
+  --accent-gradient: linear-gradient(135deg, #ff7a00 0%, #ff9400 52%, #ffb21a 100%);
+  --accent-gradient-hover: linear-gradient(135deg, #ff8600 0%, #ffa300 52%, #ffc233 100%);
+  --accent: #ff8c00;
+  --accent-soft: #fff4dd;
+  --success-soft: #ecfdf3;
+  --error-soft: #fff3f3;
+}
+
+body,
+button,
+input,
+select,
+textarea,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+span,
+a,
+label,
+th,
+td {
+  font-family: "Manrope", "Segoe UI", Roboto, sans-serif;
 }
 
 body {
   margin: 0;
-  background: #e9f1fb;
-  color: #263a53;
+  background: var(--bg-page);
+  color: var(--text-primary);
 }
 
 #root {
@@ -27,10 +78,34 @@ body {
 
 :root[data-theme="dark"] {
   color: #e5e7eb;
-  background: #0b1220;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      #101014 0,
+      #101014 22px,
+      #141419 22px,
+      #141419 24px
+    );
+  --bg-page:
+    repeating-linear-gradient(
+      -45deg,
+      #101014 0,
+      #101014 22px,
+      #141419 22px,
+      #141419 24px
+    );
+  --bg-surface: rgba(19, 19, 24, 0.92);
+  --bg-surface-strong: #17171d;
+  --text-primary: #f5f5f5;
+  --text-muted: #a2a7b3;
+  --border-soft: #2a2b33;
+  --border-strong: #373947;
+  --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.45);
+  --shadow-strong: 0 18px 42px rgba(0, 0, 0, 0.55);
+  --accent-soft: #3a2712;
 }
 
 :root[data-theme="dark"] body {
-  background: #0b1220;
+  background: var(--bg-page);
   color: #e5e7eb;
 }

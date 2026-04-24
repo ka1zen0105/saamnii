@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BarController,
   BarElement,
@@ -14,6 +14,9 @@ import {
 } from "chart.js";
 import { Chart } from "react-chartjs-2";
 import "../styles/facultyPages.css";
+import { downloadElementAsPng } from "../utils/exportPng.js";
+import { SearchableSelect } from "./SearchableSelect.jsx";
+import { subjectDisplayName } from "../utils/subjectLabel.js";
 
 ChartJS.register(
   CategoryScale,
@@ -73,6 +76,7 @@ function canonicalSubjectCode(value) {
 }
 
 export function SubjectBellCurveChart({ parsedData, preferredSubjectCode = "" }) {
+  const captureRef = useRef(null);
   const subjectOptions = useMemo(() => Object.keys(parsedData ?? {}), [parsedData]);
   const [subject, setSubject] = useState(subjectOptions[0] || "");
   const [component, setComponent] = useState("");
@@ -176,21 +180,31 @@ export function SubjectBellCurveChart({ parsedData, preferredSubjectCode = "" })
     return <p className="sub">No parsed subject data available for charting.</p>;
   }
 
+  async function onDownloadPng() {
+    await downloadElementAsPng(
+      captureRef.current,
+      `${subject || "subject"}-${component || "component"}-analysis`
+    );
+  }
+
   return (
-    <section className="chart-card">
+    <section className="chart-card" ref={captureRef}>
       <h2>Per-subject score distribution (histogram + bell curve)</h2>
 
       <div className="faculty-toolbar">
         <label>
           Subject
-          <select value={subject} onChange={(e) => setSubject(e.target.value)}>
-            {subjectOptions.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={subject}
+            onChange={setSubject}
+            options={subjectOptions.map((s) => ({ value: s, label: subjectDisplayName(s) }))}
+            placeholder="Select Subject"
+            searchPlaceholder="Search Subject..."
+          />
         </label>
+        <button type="button" className="btn-png" onClick={onDownloadPng}>
+          Download PNG
+        </button>
       </div>
 
       <div className="component-chip-row" role="tablist" aria-label="Component selection">

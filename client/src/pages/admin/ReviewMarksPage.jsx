@@ -4,6 +4,8 @@ import {
   fetchAdminMeta,
   fetchReviewRows,
 } from "../../api/adminApi.js";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
+import { subjectDisplayName } from "../../utils/subjectLabel.js";
 import "../../styles/facultyPages.css";
 import "../../styles/adminPages.css";
 
@@ -107,25 +109,23 @@ export function ReviewMarksPage() {
       <div className="faculty-toolbar">
         <label>
           Class
-          <select value={classLabel} onChange={(e) => setClassLabel(e.target.value)}>
-            <option value="">All classes</option>
-            {classes.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={classLabel}
+            onChange={setClassLabel}
+            options={classes.map((c) => ({ value: c, label: c }))}
+            placeholder="All Classes"
+            searchPlaceholder="Search Class..."
+          />
         </label>
         <label>
           Subject
-          <select value={subjectCode} onChange={(e) => setSubjectCode(e.target.value)}>
-            <option value="">All subjects</option>
-            {subjectCodes.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={subjectCode}
+            onChange={setSubjectCode}
+            options={subjectCodes.map((c) => ({ value: c, label: subjectDisplayName(c) }))}
+            placeholder="All Subjects"
+            searchPlaceholder="Search Subject..."
+          />
         </label>
       </div>
 

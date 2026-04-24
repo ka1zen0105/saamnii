@@ -7,6 +7,7 @@ import {
   fetchMyUploads,
   fetchUploadRecords,
 } from "../../api/analyticsApi.js";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import { useAuth } from "../../context/AuthContext.jsx";
 import "../../styles/facultyPages.css";
 
@@ -192,44 +193,38 @@ export function UploadPage() {
 
   return (
     <div className="faculty-page">
-      <h1>Upload results</h1>
+      <h1>Upload Results</h1>
       <p className="sub">
         Drop an Excel workbook (.xlsx). Parsed rows appear below after a successful upload.
       </p>
 
       <div className="faculty-toolbar">
         <label>
-          Class label (optional)
-          <select
+          Class Label (Optional)
+          <SearchableSelect
             value={classLabel}
-            onChange={(e) => setClassLabel(e.target.value)}
+            onChange={setClassLabel}
+            options={classes.map((c) => ({ value: c, label: c }))}
             disabled={busy}
-          >
-            <option value="">Derive from sheet / default</option>
-            {classes.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+            placeholder="Derive from Sheet / Default"
+            searchPlaceholder="Search Class..."
+          />
         </label>
         <label>
-          Uploaded dataset
-          <select
+          Uploaded Dataset
+          <SearchableSelect
             value={currentUploadId}
-            onChange={(e) => onSelectUpload(e.target.value)}
+            onChange={onSelectUpload}
+            options={uploads.map((u) => ({
+              value: u.uploadId,
+              label: `${u.classLabel || "Class?"} • ${u.uploadId} • ${new Date(
+                u.createdAt
+              ).toLocaleString()}`,
+            }))}
             disabled={busy || uploads.length === 0}
-          >
-            {uploads.length === 0 ? (
-              <option value="">No uploads yet</option>
-            ) : (
-              uploads.map((u) => (
-                <option key={u.uploadId} value={u.uploadId}>
-                  {u.classLabel || "Class?"} • {u.uploadId} • {new Date(u.createdAt).toLocaleString()}
-                </option>
-              ))
-            )}
-          </select>
+            placeholder="No Uploads Yet"
+            searchPlaceholder="Search Upload..."
+          />
         </label>
       </div>
 
@@ -247,10 +242,10 @@ export function UploadPage() {
       {currentUploadId ? (
         <div style={{ marginBottom: "0.75rem", display: "flex", gap: "0.5rem" }}>
           <button type="button" className="btn-png" onClick={onDownloadOriginal}>
-            Download original uploaded file
+            Download Original Uploaded File
           </button>
           <button type="button" className="btn-danger" onClick={onDeleteCurrentUpload}>
-            Delete this upload
+            Delete This Upload
           </button>
         </div>
       ) : null}
@@ -260,8 +255,8 @@ export function UploadPage() {
         className={`dropzone ${isDragActive ? "dropzone-active" : ""}`}
       >
         <input {...getInputProps()} />
-        <strong>Drag & drop a .xlsx file here</strong>
-        <p>or click to browse. Only .xlsx is accepted.</p>
+        <strong>Drag &amp; Drop a .xlsx File Here</strong>
+        <p>Or Click to Browse. Only .xlsx Is Accepted.</p>
       </div>
 
       {busy ? <p className="sub">Processing…</p> : null}
@@ -269,7 +264,7 @@ export function UploadPage() {
       {rows.length > 0 && (
         <>
           <h2 style={{ marginTop: "1.5rem", fontSize: "1rem", color: "#374151" }}>
-            Uploaded file data
+            Uploaded File Data
           </h2>
           <div className="table-wrap">
             <table className="data-table">

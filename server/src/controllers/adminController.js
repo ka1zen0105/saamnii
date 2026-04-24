@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import * as XLSX from "xlsx";
+import fs from "node:fs";
 import { Student } from "../models/Student.js";
 import { Upload } from "../models/Upload.js";
 import { User } from "../models/User.js";
@@ -38,6 +39,56 @@ function mergedSubjectCodesFromAssignments(assignments) {
     merged.push(...(row.subjectCodes || []));
   }
   return dedupeSubjectCodes(merged);
+}
+
+function normalizeCatalogRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  const bySem = new Map();
+  for (const row of rows) {
+    const sem = Number(row?.semester);
+    const code = trim(row?.code).toUpperCase();
+    const name = trim(row?.name);
+    if (!Number.isFinite(sem) || !code || !name) continue;
+    if (!bySem.has(sem)) bySem.set(sem, new Map());
+    bySem.get(sem).set(code, name);
+  }
+  return [...bySem.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([semester, subjectMap]) => ({
+      semester,
+      subjects: [...subjectMap.entries()]
+        .map(([code, name]) => ({ code, name }))
+        .sort((a, b) => a.code.localeCompare(b.code)),
+    }))
+    .filter((s) => s.subjects.length > 0);
+}
+
+function parseSemesterCatalogWorkbook(buffer, forcedSemester) {
+  const wb = XLSX.read(buffer, { type: "buffer" });
+  const firstSheet = wb.SheetNames[0];
+  if (!firstSheet) return [];
+  const ws = wb.Sheets[firstSheet];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  const mapped = rows.map((r) => {
+    const semester =
+      forcedSemester ?? r.Semester ?? r.semester ?? r.SEMESTER ?? "";
+    const code =
+      r["Subject Code"] ??
+      r["subject code"] ??
+      r.subjectCode ??
+      r["Code"] ??
+      r.code ??
+      "";
+    const name =
+      r["Subject Name"] ??
+      r["subject name"] ??
+      r.subjectName ??
+      r["Name"] ??
+      r.name ??
+      "";
+    return { semester, code, name };
+  });
+  return normalizeCatalogRows(mapped);
 }
 
 function avg(nums) {
@@ -608,7 +659,78 @@ export async function getFacultyOGradeDistribution(req, res, next) {
 }
 
 export async function getSemesterSubjectCatalog(_req, res) {
-  return res.json({ semesters: SEMESTER_SUBJECT_CATALOG });
+  const settings = await Settings.findById("app").lean();
+  const fromSettings = Array.isArray(settings?.semesterSubjectCatalog)
+    ? settings.semesterSubjectCatalog
+    : [];
+  const semesters = fromSettings.length ? fromSettings : SEMESTER_SUBJECT_CATALOG;
+  return res.json({ semesters });
+}
+
+/**
+ * POST /api/admin/semester-subject-catalog/upload
+ * multipart/form-data { file: .xlsx/.xls }
+ * Expected headers in first sheet: Semester, Subject Code, Subject Name
+ */
+export async function uploadSemesterSubjectCatalog(req, res, next) {
+  try {
+    if (!req.file?.buffer) {
+      return res.status(400).json({ message: "Excel file is required." });
+    }
+    const semesterRaw = req.body?.semester;
+    const forcedSemester =
+      semesterRaw !== undefined && semesterRaw !== ""
+        ? Number(semesterRaw)
+        : undefined;
+    if (
+      forcedSemester !== undefined &&
+      (!Number.isFinite(forcedSemester) || forcedSemester < 1 || forcedSemester > 8)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "semester must be a number between 1 and 8." });
+    }
+
+    const parsed = parseSemesterCatalogWorkbook(req.file.buffer, forcedSemester);
+    if (!parsed.length) {
+      return res.status(400).json({
+        message:
+          "No valid rows found. Use columns: Semester, Subject Code, Subject Name.",
+      });
+    }
+
+    await Settings.findByIdAndUpdate(
+      "app",
+      { semesterSubjectCatalog: parsed },
+      { upsert: true, new: true }
+    );
+
+    return res.json({
+      ok: true,
+      semesters: parsed,
+      message: "Semester subject catalog uploaded successfully.",
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/admin/semester-subject-catalog/template
+ * Downloads an Excel template for subject catalog uploads.
+ */
+export async function downloadSemesterSubjectCatalogTemplate(_req, res, next) {
+  try {
+    const templatePath =
+      process.env.SUBJECT_TEMPLATE_PATH ||
+      "C:\\Users\\soham\\Downloads\\Subjects_Template.xlsx";
+    if (!fs.existsSync(templatePath)) {
+      return res.status(404).json({ message: "Template file not found at configured path." });
+    }
+    return res.download(templatePath, "Subjects_Template.xlsx");
+  } catch (err) {
+    next(err);
+  }
 }
 
 export async function patchFacultyClasses(req, res, next) {

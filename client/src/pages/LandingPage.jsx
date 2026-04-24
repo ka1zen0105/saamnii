@@ -44,14 +44,14 @@ export function LandingPage() {
     <div className="landing">
       <header className="landing-header">
         <span className="landing-logo">ExamGrade</span>
-        <p className="landing-tagline">Exam grade analysis for your institution</p>
+        <p className="landing-tagline">Exam Grade Analysis for Your Institution</p>
       </header>
 
       <div className="landing-single">
         <article className="landing-card landing-card-single">
-          <h2 className="landing-card-title">Sign in</h2>
+          <h2 className="landing-card-title">Sign In</h2>
           <p className="landing-card-desc">
-            Enter your email or user ID and password.
+            Enter Your Email or User ID and Password.
           </p>
 
           {error ? (
@@ -62,7 +62,7 @@ export function LandingPage() {
 
           <form onSubmit={handleSubmit} className="landing-form">
             <label className="landing-label" htmlFor="login-identifier">
-              Email or user ID
+              Email or User ID
             </label>
             <input
               id="login-identifier"
@@ -90,7 +90,7 @@ export function LandingPage() {
             />
 
             <button type="submit" className="landing-submit" disabled={loading}>
-              {loading ? "Signing in…" : "Sign in"}
+              {loading ? "Signing In…" : "Sign In"}
             </button>
           </form>
         </article>

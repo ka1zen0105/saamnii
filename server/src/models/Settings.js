@@ -12,6 +12,17 @@ const settingsSchema = new mongoose.Schema(
         createdBy: { type: String, trim: true },
       },
     ],
+    semesterSubjectCatalog: [
+      {
+        semester: { type: Number },
+        subjects: [
+          {
+            code: { type: String, trim: true },
+            name: { type: String, trim: true },
+          },
+        ],
+      },
+    ],
   },
   { collection: "settings" }
 );
