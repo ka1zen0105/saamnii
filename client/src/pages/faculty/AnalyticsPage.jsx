@@ -175,7 +175,25 @@ export function AnalyticsPage() {
       {loading ? (
         <p className="sub">Loading…</p>
       ) : rows.length === 0 ? (
-        <p className="sub">No uploaded records found. Upload a file first.</p>
+        uploads.length > 0 && currentUploadId ? (
+          <div style={{padding:"2rem",border:"2px dashed #d1d5db",borderRadius:"10px",textAlign:"center",marginTop:"1.5rem"}}>
+            <p style={{fontSize:"1.1rem",fontWeight:700,marginBottom:"0.5rem"}}>
+              No assigned-subject data for this upload
+            </p>
+            <p style={{color:"#6b7280",fontSize:"0.9rem"}}>
+              This upload exists, but none of its subject codes match your assigned subjects.
+              Ask admin to update your subject allocation for this semester in Faculty Access.
+            </p>
+          </div>
+        ) : (
+          <div style={{padding:"2rem",border:"2px dashed #d1d5db",borderRadius:"10px",textAlign:"center",marginTop:"1.5rem"}}>
+            <p style={{fontSize:"1.1rem",fontWeight:700,marginBottom:"0.5rem"}}>No uploaded result files yet</p>
+            <p style={{color:"#6b7280",fontSize:"0.9rem"}}>
+              Upload a result workbook to see analytics.
+              Go to the <a href="/faculty/upload" style={{color:"#2563eb"}}>Upload page</a> to get started.
+            </p>
+          </div>
+        )
       ) : (
         <>
           <SubjectBellCurveChart parsedData={parsedData} />

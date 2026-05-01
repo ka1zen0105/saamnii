@@ -1,5 +1,29 @@
 export const SEMESTER_SUBJECT_CATALOG = [
   {
+    semester: 1,
+    subjects: [
+      { code: "BSC11MA01", name: "Engineering Mathematics I" },
+      { code: "BSC11PH01", name: "Engineering Physics" },
+      { code: "ESC11CS01", name: "Problem Solving and Computer Programming" },
+      { code: "ESC11EC01", name: "Basic Electrical and Electronics Engineering" },
+      { code: "HSC11EN01", name: "Professional Communication I" },
+      { code: "BSC11PHL01", name: "Engineering Physics Lab" },
+      { code: "ESC11CSL01", name: "Programming Lab" },
+    ],
+  },
+  {
+    semester: 2,
+    subjects: [
+      { code: "BSC12MA02", name: "Engineering Mathematics II" },
+      { code: "BSC12CH01", name: "Engineering Chemistry" },
+      { code: "ESC12EC02", name: "Digital Electronics" },
+      { code: "ESC12CS02", name: "Data Structures" },
+      { code: "HSC12EN02", name: "Professional Communication II" },
+      { code: "BSC12CHL01", name: "Engineering Chemistry Lab" },
+      { code: "ESC12ECL01", name: "Digital Electronics Lab" },
+    ],
+  },
+  {
     semester: 3,
     subjects: [
       { code: "BSC12EC05", name: "Signals and Systems" },
@@ -12,9 +36,20 @@ export const SEMESTER_SUBJECT_CATALOG = [
       { code: "EEM12EC01", name: "Financial Planning, Taxation and Investment" },
       { code: "VEC12EC01", name: "Human Values and Professional Ethics" },
       { code: "CEP12EC01", name: "Community Engagement Project" },
-      { code: "LLCXX", name: "One Course from CC" },
       { code: "PCC11EC03", name: "Digital Electronics" },
       { code: "PCC11EC01", name: "Innovation and Design Thinking" },
+    ],
+  },
+  {
+    semester: 4,
+    subjects: [
+      { code: "PCC12EC08", name: "Microprocessors and Microcontrollers" },
+      { code: "PCC12EC09", name: "Analog Communication" },
+      { code: "PCC12EC10", name: "Electromagnetic Field Theory" },
+      { code: "PCC12EC11", name: "Linear Integrated Circuits" },
+      { code: "BSC12MA03", name: "Engineering Mathematics III" },
+      { code: "OEEC41", name: "Internet of Things" },
+      { code: "OEEC42", name: "Python Programming" },
     ],
   },
   {
@@ -30,6 +65,41 @@ export const SEMESTER_SUBJECT_CATALOG = [
       { code: "ECL503", name: "Department Optional (Course - I) Lab" },
       { code: "ECL504", name: "Professional Communication and Ethics-II" },
       { code: "ECM501", name: "Mini project - 2A" },
+    ],
+  },
+  {
+    semester: 6,
+    subjects: [
+      { code: "ECC601", name: "Digital Signal Processing" },
+      { code: "ECC602", name: "VLSI Design" },
+      { code: "ECC603", name: "Wireless Communication" },
+      { code: "ECC604", name: "Embedded Systems" },
+      { code: "ECCDO601", name: "Department Optional (Course - II)" },
+      { code: "ECL601", name: "Digital Signal Processing Lab" },
+      { code: "ECL602", name: "VLSI Design Lab" },
+      { code: "ECL603", name: "Embedded Systems Lab" },
+      { code: "ECM601", name: "Mini project - 2B" },
+    ],
+  },
+  {
+    semester: 7,
+    subjects: [
+      { code: "ECC701", name: "Microwave Engineering" },
+      { code: "ECC702", name: "Antenna and Wave Propagation" },
+      { code: "ECCDO701", name: "Department Optional (Course - III)" },
+      { code: "ECCDO702", name: "Department Optional (Course - IV)" },
+      { code: "ECL701", name: "Microwave Engineering Lab" },
+      { code: "ECL702", name: "Project Phase I" },
+    ],
+  },
+  {
+    semester: 8,
+    subjects: [
+      { code: "ECC801", name: "Optical Fiber Communication" },
+      { code: "ECCDO801", name: "Department Optional (Course - V)" },
+      { code: "ECCOE801", name: "Open Elective" },
+      { code: "ECL801", name: "Project Phase II" },
+      { code: "ECS801", name: "Seminar" },
     ],
   },
 ];

@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import fs from "node:fs";
 import mongoose from "mongoose";
 import { Student, Upload } from "../models/index.js";
 import {
@@ -64,9 +65,11 @@ function buildSubjectsFromRow(row) {
 }
 
 function mapRowToStudent(row, { uploadId, classLabel }) {
-  const semester = parseNumber(
+  const semesterFromRow = parseNumber(
     getCell(row, "SEM", "SEMESTER", "SEM NO", "SEMNO", "TERM")
   );
+  const semesterFromClassLabel = detectSemesterFromText(classLabel);
+  const semester = semesterFromRow ?? semesterFromClassLabel;
   const branch = trimStr(
     getCell(
       row,
@@ -165,6 +168,16 @@ function normalizeText(v) {
     .replace(/[^A-Z0-9]+/g, "");
 }
 
+function detectSemesterFromText(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return undefined;
+  const m1 = s.match(/\bsem(?:ester)?\s*[-: ]*\s*([1-8])\b/i);
+  if (m1) return Number(m1[1]);
+  const m2 = s.match(/\b([1-8])\s*(?:st|nd|rd|th)?\s*sem(?:ester)?\b/i);
+  if (m2) return Number(m2[1]);
+  return undefined;
+}
+
 function isMongoTxnUnsupported(err) {
   const msg = String(err?.message || "");
   return (
@@ -199,10 +212,27 @@ function isContineoMatrix(rows) {
   return locateContineoLayout(rows) !== null;
 }
 
-function parseContineoRows(rows, { uploadId, bodyClassLabel }) {
+function parseContineoRows(rows, { uploadId, bodyClassLabel, sheetName }) {
   const layout = locateContineoLayout(rows);
   if (!layout) {
     return { studentsPayload: [], subjectsFound: 0, uploadMeta: null };
+  }
+  let inferredSemester = detectSemesterFromText(bodyClassLabel);
+  if (inferredSemester == null) {
+    inferredSemester = detectSemesterFromText(sheetName);
+  }
+  if (inferredSemester == null) {
+    for (let r = 0; r < Math.min(rows.length, 16); r += 1) {
+      const row = Array.isArray(rows[r]) ? rows[r] : [];
+      for (const cell of row) {
+        const sem = detectSemesterFromText(cell);
+        if (sem != null) {
+          inferredSemester = sem;
+          break;
+        }
+      }
+      if (inferredSemester != null) break;
+    }
   }
   const headerRow = rows[layout.headerIndex] || [];
   const titleRow = rows[layout.titleIndex] || [];
@@ -327,7 +357,7 @@ function parseContineoRows(rows, { uploadId, bodyClassLabel }) {
       name,
       prn,
       seatNo: trimStr(row[COL_ROLL]),
-      semester: undefined,
+      semester: inferredSemester,
       examMonth: "",
       examYear: undefined,
       branch: "",
@@ -343,11 +373,38 @@ function parseContineoRows(rows, { uploadId, bodyClassLabel }) {
     studentsPayload.push(studentDoc);
 
     if (!uploadMeta) {
-      uploadMeta = { classLabel, semester: undefined, examMonth: "", examYear: undefined, branch: "" };
+      uploadMeta = {
+        classLabel,
+        semester: inferredSemester,
+        examMonth: "",
+        examYear: undefined,
+        branch: "",
+      };
     }
   }
 
   return { studentsPayload, subjectsFound, uploadMeta };
+}
+
+/**
+ * GET /api/upload/template
+ * Downloads template Excel for faculty marks upload.
+ */
+export async function downloadUploadTemplate(_req, res, next) {
+  try {
+    const templatePath =
+      process.env.MARKS_UPLOAD_TEMPLATE_PATH ||
+      "C:\\Users\\soham\\Downloads\\sem3_results_outline (1).xlsx";
+    if (!fs.existsSync(templatePath)) {
+      return res.status(404).json({
+        error: "Not Found",
+        message: "Upload template file not found on server.",
+      });
+    }
+    return res.download(templatePath, "marks-upload-template.xlsx");
+  } catch (err) {
+    next(err);
+  }
 }
 
 /**
@@ -482,9 +539,10 @@ export async function uploadSpreadsheet(req, res, next) {
         studentsPayload.push(studentDoc);
 
         if (!uploadMeta) {
+          const semesterFromClassLabel = detectSemesterFromText(classLabel);
           uploadMeta = {
             classLabel,
-            semester,
+            semester: semester ?? semesterFromClassLabel,
             examMonth: trimStr(getCell(row, "MONTH", "MON", "EXAM MONTH")),
             examYear: parseNumber(getCell(row, "YEAR", "EXAM YEAR")),
             branch,
@@ -509,7 +567,11 @@ export async function uploadSpreadsheet(req, res, next) {
             "Invalid sheet structure. Expected either DetailedResultSheet columns or Contineo matrix format.",
         });
       }
-      const parsed = parseContineoRows(matrixRows, { uploadId, bodyClassLabel });
+      const parsed = parseContineoRows(matrixRows, {
+        uploadId,
+        bodyClassLabel,
+        sheetName: onlySheetName,
+      });
       studentsPayload = parsed.studentsPayload;
       subjectsFound = parsed.subjectsFound;
       uploadMeta = parsed.uploadMeta;

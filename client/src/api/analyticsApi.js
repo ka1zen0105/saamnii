@@ -48,6 +48,13 @@ export async function downloadOriginalUploadFile(uploadId) {
   return { blob: data, headers };
 }
 
+export async function downloadUploadTemplateFile() {
+  const { data, headers } = await api.get("/api/upload/template", {
+    responseType: "blob",
+  });
+  return { blob: data, headers };
+}
+
 export async function fetchMyUploads() {
   const { data } = await api.get("/api/upload/my-uploads");
   return data?.uploads ?? [];

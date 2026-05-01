@@ -40,6 +40,18 @@ export async function fetchSemesterSubjectCatalog() {
   return data?.semesters ?? [];
 }
 
+export async function fetchSubjectSemesters() {
+  const { data } = await api.get("/api/subjects/semesters");
+  return Array.isArray(data) ? data : [];
+}
+
+export async function fetchSubjectsBySemester(semester) {
+  const { data } = await api.get("/api/subjects", {
+    params: { semester },
+  });
+  return Array.isArray(data) ? data : [];
+}
+
 export async function uploadSemesterSubjectCatalog(file, semester) {
   const form = new FormData();
   form.append("file", file);

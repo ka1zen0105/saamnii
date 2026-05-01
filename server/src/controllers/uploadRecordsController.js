@@ -31,18 +31,26 @@ function trimStr(v) {
   return String(v).trim();
 }
 
+function normalizeSubjectCode(value) {
+  const raw = trimStr(value);
+  if (!raw) return "";
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  const firstToken = firstLine.split(/\s+/)[0].trim();
+  return firstToken.toUpperCase();
+}
+
 function allowedSubjectSet(req) {
   const list = Array.isArray(req.user?.subjectCodes) ? req.user.subjectCodes : [];
-  return new Set(list.map((c) => trimStr(c)).filter(Boolean));
+  return new Set(list.map((c) => normalizeSubjectCode(c)).filter(Boolean));
 }
 
 function filterSubjectsByRole(req, subjects) {
   const subs = Array.isArray(subjects) ? subjects : [];
   if (req.user?.role !== "faculty") return subs;
   const allow = allowedSubjectSet(req);
-  // Empty subjectCodes means no restriction (e.g. email-based mentor login).
-  if (allow.size === 0) return subs;
-  return subs.filter((sub) => allow.has(trimStr(sub?.code)));
+  // Uniform policy: faculty can only view explicitly assigned subjects.
+  if (allow.size === 0) return [];
+  return subs.filter((sub) => allow.has(normalizeSubjectCode(sub?.code)));
 }
 
 async function getUploadWithAccess(req, uploadId) {

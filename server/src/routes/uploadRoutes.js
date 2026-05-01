@@ -8,7 +8,10 @@ import {
   getUploadAnalytics,
   getUploadRecords,
 } from "../controllers/uploadRecordsController.js";
-import { uploadSpreadsheet } from "../controllers/uploadController.js";
+import {
+  downloadUploadTemplate,
+  uploadSpreadsheet,
+} from "../controllers/uploadController.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -37,6 +40,7 @@ router.get(
   getUploadRecords
 );
 router.get("/:uploadId/analytics", verifyToken, getUploadAnalytics);
+router.get("/template", verifyToken, requireFaculty, downloadUploadTemplate);
 
 router.get("/:uploadId/file", verifyToken, downloadUploadFile);
 router.delete("/:uploadId", verifyToken, deleteUpload);

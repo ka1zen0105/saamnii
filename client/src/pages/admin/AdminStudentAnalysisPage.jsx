@@ -19,7 +19,7 @@ import "../../styles/adminPages.css";
 import { downloadElementAsPng } from "../../utils/exportPng.js";
 import { SearchableSelect } from "../../components/SearchableSelect.jsx";
 import { subjectDisplayName } from "../../utils/subjectLabel.js";
-import { toFacultySelectOption } from "../../utils/facultySelect.js";
+import { facultyOptionLabel, facultyOptionSearchText } from "../../utils/facultySelect.js";
 
 const GRADE_ORDER = ["O", "A", "B", "C", "D", "E", "P", "F"];
 
@@ -61,6 +61,29 @@ function canonicalSubjectCode(value) {
   const firstLine = raw.split(/\r?\n/)[0].trim();
   const firstToken = firstLine.split(/\s+/)[0].trim();
   return firstToken.toUpperCase();
+}
+
+function inferSemesterValue(row) {
+  const direct = row?.semester;
+  if (direct != null && String(direct).trim() !== "") return String(direct).trim();
+  const classLabel = String(row?.classLabel ?? "").trim();
+  const m = classLabel.match(/sem(?:ester)?\s*[-: ]*\s*([1-8])/i);
+  return m?.[1] ? String(m[1]) : "";
+}
+
+function buildSemesterOptions(rows, uploads, selectedUploadId) {
+  const vals = new Set(
+    (rows || []).map((r) => inferSemesterValue(r)).filter(Boolean)
+  );
+  const upload = (uploads || []).find((u) => u.uploadId === selectedUploadId);
+  if (upload?.semester != null && String(upload.semester).trim()) {
+    vals.add(String(upload.semester).trim());
+  }
+  if (upload?.classLabel) {
+    const m = upload.classLabel.match(/sem(?:ester)?\s*[-: ]*\s*([1-8])/i);
+    if (m?.[1]) vals.add(m[1]);
+  }
+  return [...vals].sort((a, b) => Number(a) - Number(b));
 }
 
 function buildExamGradeDistribution(rows) {
@@ -125,21 +148,29 @@ export function AdminStudentAnalysisPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [bulkPngBusy, setBulkPngBusy] = useState(false);
+  const facultySelectOptions = useMemo(
+    () =>
+      (faculty || []).map((f) => {
+        const count = Number(f?.uploadCount || 0);
+        const suffix = count === 1 ? "1 upload" : `${count} uploads`;
+        return {
+          value: String(f?.userId || ""),
+          label: `${facultyOptionLabel(f)} (${suffix})`,
+          searchText: facultyOptionSearchText(f),
+        };
+      }),
+    [faculty]
+  );
 
-  const semesterOptions = useMemo(() => {
-    const vals = Array.from(
-      new Set(
-        (rows || [])
-          .map((r) => (r?.semester == null ? "" : String(r.semester).trim()))
-          .filter(Boolean)
-      )
-    );
-    return vals.sort((a, b) => Number(a) - Number(b));
-  }, [rows]);
+
+  const semesterOptions = useMemo(
+    () => buildSemesterOptions(rows, uploads, uploadId),
+    [rows, uploads, uploadId]
+  );
 
   const scopedRows = useMemo(() => {
     if (!semester) return rows;
-    return (rows || []).filter((r) => String(r?.semester ?? "").trim() === semester);
+    return (rows || []).filter((r) => inferSemesterValue(r) === semester);
   }, [rows, semester]);
 
   const bySubject = useMemo(() => buildExamGradeDistribution(scopedRows), [scopedRows]);
@@ -192,6 +223,15 @@ export function AdminStudentAnalysisPage() {
   }, [facultyId]);
 
   useEffect(() => {
+    if (!semester && semesterOptions.length) {
+      setSemester(semesterOptions[0]);
+    }
+    if (semester && semesterOptions.length && !semesterOptions.includes(semester)) {
+      setSemester(semesterOptions[0]);
+    }
+  }, [semesterOptions]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!subject && subjects.length) setSubject(subjects[0]);
     if (subject && !subjects.includes(subject)) setSubject(subjects[0] || "");
   }, [subject, subjects]);
@@ -229,6 +269,7 @@ export function AdminStudentAnalysisPage() {
     setLoading(true);
     setErr("");
     try {
+      setSemester("");
       const rec = await fetchUploadRecords(nextUploadId);
       setUploadId(nextUploadId);
       setRows(rec?.rows ?? []);
@@ -318,7 +359,7 @@ export function AdminStudentAnalysisPage() {
           <SearchableSelect
             value={facultyId}
             onChange={setFacultyId}
-            options={faculty.map(toFacultySelectOption)}
+            options={facultySelectOptions}
             disabled={loading || bulkPngBusy}
             placeholder="No Faculty Available"
             searchPlaceholder="Search by name, email, or ID…"
@@ -345,7 +386,10 @@ export function AdminStudentAnalysisPage() {
           <SearchableSelect
             value={semester}
             onChange={setSemester}
-            options={semesterOptions.map((s) => ({ value: s, label: s }))}
+            options={[
+              { value: "", label: "All Semesters" },
+              ...semesterOptions.map((s) => ({ value: s, label: `Semester ${s}` })),
+            ]}
             disabled={loading || bulkPngBusy}
             placeholder="All Semesters"
             searchPlaceholder="Type semester number…"
@@ -396,7 +440,15 @@ export function AdminStudentAnalysisPage() {
       {loading ? (
         <p className="sub">Loading…</p>
       ) : rows.length === 0 ? (
-        <p className="sub">No uploaded records found for the selected faculty.</p>
+        <div style={{padding:"2rem",border:"2px dashed #d1d5db",borderRadius:"10px",textAlign:"center",marginTop:"1.5rem"}}>
+          <p style={{fontSize:"1.1rem",fontWeight:700,marginBottom:"0.5rem"}}>
+            No uploads for this faculty member
+          </p>
+          <p style={{color:"#6b7280",fontSize:"0.9rem"}}>
+            This faculty has not uploaded any result workbooks yet.
+            Ask them to upload from their Upload page, or select a different faculty above.
+          </p>
+        </div>
       ) : scopedRows.length === 0 ? (
         <p className="sub">No rows found for selected semester.</p>
       ) : !subject ? (

@@ -1,0 +1,5345 @@
+# Combined related code context
+
+
+
+==================== FILE: server\src\controllers\authController.js ====================
+
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { User } from "../models/User.js";
+import { SE_ECS_FACULTY } from "../data/seEcsFaculty.js";
+
+function unauthorized(res) {
+  return res.status(401).json({
+    error: "Unauthorized",
+    message: "Invalid email or password.",
+  });
+}
+
+function splitCsvEnv(key) {
+  const raw = process.env[key];
+  return raw
+    ? String(raw)
+        .split(",")
+        .map((v) => v.trim().toLowerCase())
+        .filter(Boolean)
+    : [];
+}
+
+function normalizeIdentifier(v) {
+  return String(v || "").trim().toLowerCase();
+}
+
+async function isAdminLoginMatch(identifier, password) {
+  const adminId = normalizeIdentifier(process.env.ADMIN_ID);
+  const adminEmails = splitCsvEnv("ADMIN_EMAILS");
+  const isKnownAdminIdentifier =
+    (adminId && identifier === adminId) || adminEmails.includes(identifier);
+  if (!isKnownAdminIdentifier) return false;
+
+  const hash = process.env.ADMIN_PASSWORD_HASH;
+  if (hash && typeof hash === "string" && hash.trim()) {
+    return bcrypt.compare(password, hash);
+  }
+
+  const plain = process.env.ADMIN_PASSWORD;
+  if (typeof plain === "string" && plain.length > 0) {
+    return password === plain;
+  }
+
+  return false;
+}
+
+/**
+ * POST /api/auth/login
+ * Body: { email|userId, password }
+ */
+export async function login(req, res, next) {
+  try {
+    const rawIdentifier = req.body?.email ?? req.body?.userId;
+    const { password } = req.body ?? {};
+
+    if (
+      rawIdentifier === undefined ||
+      rawIdentifier === null ||
+      typeof rawIdentifier !== "string" ||
+      !rawIdentifier.trim()
+    ) {
+      return unauthorized(res);
+    }
+
+    if (password === undefined || password === null || typeof password !== "string") {
+      return unauthorized(res);
+    }
+
+    const identifier = normalizeIdentifier(rawIdentifier);
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      console.error("[auth] JWT_SECRET is not configured");
+      return res.status(500).json({
+        error: "Server configuration error",
+        message: "Authentication is not configured.",
+      });
+    }
+
+    if (await isAdminLoginMatch(identifier, password)) {
+      const payload = {
+        userId: process.env.ADMIN_ID || identifier,
+        role: "admin",
+        subjectCodes: [],
+        assignedClasses: [],
+        name: "Admin",
+        email: splitCsvEnv("ADMIN_EMAILS")[0] || null,
+        contact: null,
+      };
+      const token = jwt.sign(payload, secret, { expiresIn: "7d" });
+      return res.json({
+        token,
+        user: payload,
+      });
+    }
+
+    const facultyDoc = await User.findOne({
+      role: "faculty",
+      $or: [{ userId: identifier }, { email: identifier }],
+    }).select("+passwordHash");
+
+    if (facultyDoc?.passwordHash) {
+      const ok = await bcrypt.compare(password, facultyDoc.passwordHash);
+      if (!ok) return unauthorized(res);
+
+      const payload = {
+        userId: facultyDoc.userId,
+        role: "faculty",
+        subjectCodes: Array.isArray(facultyDoc.subjectCodes) ? facultyDoc.subjectCodes : [],
+        assignedClasses: Array.isArray(facultyDoc.assignedClasses) ? facultyDoc.assignedClasses : [],
+        name: facultyDoc.displayLabel || facultyDoc.userId,
+        email: facultyDoc.email || null,
+        contact: facultyDoc.contact || null,
+      };
+
+      const token = jwt.sign(payload, secret, { expiresIn: "7d" });
+      return res.json({
+        token,
+        user: payload,
+      });
+    }
+
+    // Backward compatibility for static mentor dataset.
+    if (password === "teacher123") {
+      const mentor = SE_ECS_FACULTY.find(
+        (item) => item?.email && String(item.email).trim().toLowerCase() === identifier
+      );
+      if (mentor) {
+        const payload = {
+          userId: identifier,
+          role: "faculty",
+          subjectCodes: [],
+          assignedClasses: [],
+          name: mentor.name,
+          email: mentor.email,
+          contact: mentor.contact,
+        };
+
+        const token = jwt.sign(payload, secret, { expiresIn: "7d" });
+        return res.json({
+          token,
+          user: payload,
+        });
+      }
+    }
+
+    return unauthorized(res);
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==================== FILE: server\src\controllers\adminController.js ====================
+
+import bcrypt from "bcryptjs";
+import * as XLSX from "xlsx";
+import fs from "node:fs";
+import { Student } from "../models/Student.js";
+import { Upload } from "../models/Upload.js";
+import { Subject } from "../models/Subject.js";
+import { User } from "../models/User.js";
+import { Settings } from "../models/Settings.js";
+import { SchoolClass } from "../models/SchoolClass.js";
+import { SEMESTER_SUBJECT_CATALOG } from "../data/semesterSubjectCatalog.js";
+import { SE_ECS_FACULTY } from "../data/seEcsFaculty.js";
+import {
+  computeGradeBands,
+  subjectTotalPercent,
+} from "../utils/gradeBandAnalysis.js";
+
+function trim(v) {
+  if (v === undefined || v === null) return "";
+  return String(v).trim();
+}
+
+function dedupeSubjectCodes(codes) {
+  return [...new Set((codes || []).map((c) => String(c).trim()).filter(Boolean))];
+}
+
+function normalizeSemesterAssignments(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map((r) => ({
+      semester: Number(r?.semester),
+      subjectCodes: dedupeSubjectCodes(r?.subjectCodes || []),
+    }))
+    .filter((r) => Number.isFinite(r.semester))
+    .sort((a, b) => a.semester - b.semester);
+}
+
+function mergedSubjectCodesFromAssignments(assignments) {
+  const merged = [];
+  for (const row of assignments || []) {
+    merged.push(...(row.subjectCodes || []));
+  }
+  return dedupeSubjectCodes(merged);
+}
+
+function normalizeCatalogRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  const bySem = new Map();
+  for (const row of rows) {
+    const sem = Number(row?.semester);
+    const code = trim(row?.code);
+    const name = trim(row?.name);
+    if (!Number.isFinite(sem) || !code || !name) continue;
+    if (!bySem.has(sem)) bySem.set(sem, new Map());
+    bySem.get(sem).set(code, name);
+  }
+  return [...bySem.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([semester, subjectMap]) => ({
+      semester,
+      subjects: [...subjectMap.entries()]
+        .map(([code, name]) => ({ code, name }))
+        .sort((a, b) => a.code.localeCompare(b.code)),
+    }))
+    .filter((s) => s.subjects.length > 0);
+}
+
+function normalizeFieldKey(key) {
+  return String(key ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function pickRowValue(row, aliases) {
+  const obj = row && typeof row === "object" ? row : {};
+  const entries = Object.entries(obj);
+  const aliasSet = new Set((aliases || []).map((a) => normalizeFieldKey(a)));
+  for (const [k, v] of entries) {
+    if (aliasSet.has(normalizeFieldKey(k))) return v;
+  }
+  return "";
+}
+
+function detectSemesterFromText(value) {
+  const s = String(value ?? "");
+  const m = s.match(/semester\s*([1-8])/i);
+  if (!m) return undefined;
+  const sem = Number(m[1]);
+  return Number.isFinite(sem) ? sem : undefined;
+}
+
+function normalizeStoredCatalog(semesters) {
+  if (!Array.isArray(semesters)) return [];
+  const flat = [];
+  for (const semRow of semesters) {
+    const semester = Number(semRow?.semester);
+    if (!Number.isFinite(semester)) continue;
+    const subjects = Array.isArray(semRow?.subjects) ? semRow.subjects : [];
+    for (const sub of subjects) {
+      flat.push({
+        semester,
+        code: trim(sub?.code),
+        name: trim(sub?.name),
+      });
+    }
+  }
+  return normalizeCatalogRows(flat);
+}
+
+function mergeSemesterCatalog(existingRows, incomingRows) {
+  const normalizedExisting = normalizeStoredCatalog(existingRows);
+  const normalizedIncoming = normalizeStoredCatalog(incomingRows);
+  const bySemester = new Map(normalizedExisting.map((row) => [row.semester, row.subjects]));
+  for (const row of normalizedIncoming) {
+    bySemester.set(row.semester, row.subjects);
+  }
+  return [...bySemester.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([semester, subjects]) => ({ semester, subjects }));
+}
+
+function parseSemesterCatalogWorkbook(buffer, forcedSemester) {
+  const wb = XLSX.read(buffer, { type: "buffer" });
+  const firstSheet = wb.SheetNames[0];
+  if (!firstSheet) return [];
+  const ws = wb.Sheets[firstSheet];
+  const matrix = XLSX.utils.sheet_to_json(ws, {
+    header: 1,
+    defval: "",
+    raw: false,
+  });
+  let inferredSemester = forcedSemester;
+  if (inferredSemester == null) {
+    for (const row of matrix) {
+      if (!Array.isArray(row)) continue;
+      for (const cell of row) {
+        const detected = detectSemesterFromText(cell);
+        if (detected != null) {
+          inferredSemester = detected;
+          break;
+        }
+      }
+      if (inferredSemester != null) break;
+    }
+  }
+
+  let headerIndex = -1;
+  let codeCol = -1;
+  let nameCol = -1;
+  for (let r = 0; r < matrix.length; r += 1) {
+    const row = Array.isArray(matrix[r]) ? matrix[r] : [];
+    for (let c = 0; c < row.length; c += 1) {
+      const v = normalizeFieldKey(row[c]);
+      if (codeCol === -1 && (v === "subjectcode" || v === "code")) codeCol = c;
+      if (nameCol === -1 && (v === "subjectname" || v === "name")) nameCol = c;
+    }
+    if (codeCol !== -1 && nameCol !== -1) {
+      headerIndex = r;
+      break;
+    }
+  }
+
+  const mapped = [];
+  if (headerIndex !== -1) {
+    for (let r = headerIndex + 1; r < matrix.length; r += 1) {
+      const row = Array.isArray(matrix[r]) ? matrix[r] : [];
+      const code = String(row[codeCol] ?? "").trim();
+      const name = String(row[nameCol] ?? "").trim();
+      if (!code && !name) continue;
+      mapped.push({
+        semester: inferredSemester ?? "",
+        code,
+        name,
+      });
+    }
+  } else {
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+    for (const r of rows) {
+      mapped.push({
+        semester:
+          forcedSemester ??
+          pickRowValue(r, ["Semester", "Sem", "SEMESTER", "SEM"]) ??
+          "",
+        code:
+          pickRowValue(r, [
+            "Subject Code",
+            "subject code",
+            "SubjectCode",
+            "subjectCode",
+            "Code",
+            "code",
+          ]) ?? "",
+        name:
+          pickRowValue(r, [
+            "Subject Name",
+            "subject name",
+            "SubjectName",
+            "subjectName",
+            "Name",
+            "name",
+          ]) ?? "",
+      });
+    }
+  }
+  return normalizeCatalogRows(mapped);
+}
+
+function avg(nums) {
+  const a = nums.filter((n) => n != null && Number.isFinite(n));
+  if (!a.length) return null;
+  return a.reduce((x, y) => x + y, 0) / a.length;
+}
+
+function gradeFromPercentage(pct) {
+  if (!Number.isFinite(Number(pct))) return "";
+  const p = Number(pct);
+  if (p >= 85) return "O";
+  if (p >= 80) return "A";
+  if (p >= 70) return "B";
+  if (p >= 60) return "C";
+  if (p >= 50) return "D";
+  if (p >= 45) return "E";
+  if (p >= 40) return "P";
+  return "F";
+}
+
+function mentorUserId(row) {
+  const email = trim(row?.email).toLowerCase();
+  if (email) return email;
+  const contact = trim(row?.contact);
+  if (contact) return `mentor-${contact}`;
+  return `mentor-${trim(row?.name).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
+function staticMentorUserIds() {
+  if (!Array.isArray(SE_ECS_FACULTY) || SE_ECS_FACULTY.length === 0) return new Set();
+  return new Set(SE_ECS_FACULTY.map((row) => mentorUserId(row)));
+}
+
+async function ensureMentorFacultyUsers() {
+  if (!Array.isArray(SE_ECS_FACULTY) || SE_ECS_FACULTY.length === 0) return;
+  const ops = SE_ECS_FACULTY.map((row) => {
+    const userId = mentorUserId(row);
+    return {
+      updateOne: {
+        filter: { userId, role: "faculty" },
+        update: {
+          $set: {
+            role: "faculty",
+            displayLabel: trim(row?.name),
+            email: trim(row?.email).toLowerCase(),
+            contact: trim(row?.contact),
+          },
+          $setOnInsert: {
+            subjectCodes: [],
+            semesterSubjectAssignments: [],
+            assignedClasses: [],
+          },
+        },
+        upsert: true,
+      },
+    };
+  });
+  await User.bulkWrite(ops);
+}
+
+function buildStudentQuery(req) {
+  const classLabel = trim(req.query.classLabel);
+  const subjectCode = trim(req.query.subjectCode);
+  const facultyId = trim(req.query.facultyId);
+  const semester = req.query.semester;
+  /** @type {Record<string, unknown>} */
+  const q = {};
+  if (classLabel) q.classLabel = classLabel;
+  if (semester !== undefined && semester !== "" && Number.isFinite(Number(semester))) {
+    q.semester = Number(semester);
+  }
+  if (subjectCode) {
+    q["subjects.code"] = subjectCode;
+  }
+  if (facultyId) {
+    q.uploadId = { $in: [] };
+  }
+  return q;
+}
+
+async function applyFacultyScopeToQuery(q, req) {
+  const facultyId = trim(req.query.facultyId);
+  if (!facultyId) return q;
+  const uploads = await Upload.find({ facultyId }).select("uploadId").lean();
+  const uploadIds = uploads.map((u) => trim(u?.uploadId)).filter(Boolean);
+  q.uploadId = uploadIds.length ? { $in: uploadIds } : { $in: [] };
+  return q;
+}
+
+/**
+ * GET /api/admin/dashboard
+ */
+export async function getAdminDashboard(req, res, next) {
+  try {
+    const q = await applyFacultyScopeToQuery(buildStudentQuery(req), req);
+    const subjectCodeFilter = trim(req.query.subjectCode);
+    const [totalStudents, settings] = await Promise.all([
+      Student.countDocuments(q),
+      Settings.findById("app").lean(),
+    ]);
+
+    const students = await Student.find(q).lean();
+    let recordRows = 0;
+    const subjectKeySet = new Set();
+    for (const s of students) {
+      const subs = s.subjects || [];
+      recordRows += subs.length;
+      for (const sub of subs) {
+        const c = trim(sub.code);
+        if (c) subjectKeySet.add(c);
+      }
+    }
+    const subjectsCount = subjectKeySet.size;
+    let passCount = 0;
+    let failCount = 0;
+    const gradeDistribution = {};
+    const sgpaVals = [];
+
+    for (const s of students) {
+      const r = String(s.result ?? "").toLowerCase();
+      if (/fail|withheld|absent/.test(r)) failCount += 1;
+      else if (/pass|successful|complete|dist|first/.test(r)) passCount += 1;
+      if (s.sgpa != null && Number.isFinite(Number(s.sgpa))) {
+        sgpaVals.push(Number(s.sgpa));
+      }
+      if (subjectCodeFilter) {
+        const subs = (s.subjects || []).filter((sub) => trim(sub?.code) === subjectCodeFilter);
+        for (const sub of subs) {
+          const g = gradeFromPercentage(subjectTotalPercent(sub)) || "(blank)";
+          gradeDistribution[g] = (gradeDistribution[g] ?? 0) + 1;
+        }
+      } else {
+        const g = gradeFromPercentage(s.percentage) || "(blank)";
+        gradeDistribution[g] = (gradeDistribution[g] ?? 0) + 1;
+      }
+    }
+
+    const n = students.length;
+    const passPct = n > 0 ? Math.round((passCount / n) * 10000) / 100 : 0;
+    const avgSgpa = avg(sgpaVals);
+
+    const passFailBySubject = computePassFailBySubject(students);
+
+    const uploads = await Upload.find().sort({ createdAt: 1 }).lean();
+    const performanceTrend = [];
+    for (let i = 0; i < uploads.length; i += 1) {
+      const u = uploads[i];
+      const group = await Student.aggregate([
+        { $match: { uploadId: u.uploadId } },
+        { $group: { _id: null, avgSgpa: { $avg: "$sgpa" } } },
+      ]);
+      performanceTrend.push({
+        uploadId: u.uploadId,
+        label: `Batch ${i + 1}`,
+        avgSgpa:
+          group[0]?.avgSgpa != null
+            ? Math.round(Number(group[0].avgSgpa) * 1000) / 1000
+            : null,
+        createdAt: u.createdAt,
+      });
+    }
+
+    const publishedUpdates = Array.isArray(settings?.examUpdates)
+      ? settings.examUpdates
+          .filter((u) => u?.published && String(u?.message || "").trim())
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+          .slice(0, 10)
+      : [];
+
+    return res.json({
+      stats: {
+        totalStudents,
+        recordRows,
+        subjectsCount,
+        failCount,
+        passPct,
+        avgSgpa: avgSgpa != null ? Math.round(avgSgpa * 1000) / 1000 : null,
+      },
+      gradeDistribution,
+      passFailBySubject,
+      performanceTrend,
+      publishResults: Boolean(settings?.publishResults),
+      examUpdates: publishedUpdates,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/admin/exam-updates
+ */
+export async function getExamUpdates(req, res, next) {
+  try {
+    const settings = await Settings.findById("app").lean();
+    const updates = Array.isArray(settings?.examUpdates)
+      ? settings.examUpdates
+          .filter((u) => u?.published && String(u?.message || "").trim())
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      : [];
+    return res.json({ updates });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/admin/exam-updates
+ * Body: { message: string }
+ */
+export async function createExamUpdate(req, res, next) {
+  try {
+    const message = trim(req.body?.message);
+    if (!message) {
+      return res.status(400).json({ message: "message is required" });
+    }
+
+    const nextUpdate = {
+      message,
+      published: true,
+      createdAt: new Date(),
+      createdBy: trim(req.user?.userId) || "admin",
+    };
+
+    const doc = await Settings.findByIdAndUpdate(
+      "app",
+      { $push: { examUpdates: { $each: [nextUpdate], $slice: -100 } } },
+      { new: true, upsert: true }
+    ).lean();
+
+    const updates = Array.isArray(doc?.examUpdates)
+      ? doc.examUpdates
+          .filter((u) => u?.published && String(u?.message || "").trim())
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      : [];
+
+    return res.status(201).json({ ok: true, updates });
+  } catch (err) {
+    next(err);
+  }
+}
+
+function computePassFailBySubject(students) {
+  /** @type {Map<string, { subjectCode: string, subjectName: string, pass: number, fail: number }>} */
+  const map = new Map();
+  for (const s of students) {
+    for (const sub of s.subjects || []) {
+      const code = trim(sub.code);
+      const name = trim(sub.name) || code || "Unknown";
+      const key = code || name;
+      if (!map.has(key)) {
+        map.set(key, { subjectCode: code, subjectName: name, pass: 0, fail: 0 });
+      }
+      const row = map.get(key);
+      const r = String(sub.result ?? "").toLowerCase();
+      if (/fail|withheld|absent|ft/.test(r)) row.fail += 1;
+      else if (/pass|successful|complete|dist|sat/.test(r)) row.pass += 1;
+    }
+  }
+  return [...map.values()].sort((a, b) =>
+    a.subjectCode.localeCompare(b.subjectCode, undefined, { sensitivity: "base" })
+  );
+}
+
+/**
+ * GET /api/admin/settings
+ */
+export async function getSettings(req, res, next) {
+  try {
+    let doc = await Settings.findById("app").lean();
+    if (!doc) {
+      await Settings.create({ _id: "app", publishResults: false });
+      doc = { publishResults: false };
+    }
+    return res.json({ publishResults: Boolean(doc.publishResults) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/admin/settings  { publishResults: boolean }
+ */
+export async function patchSettings(req, res, next) {
+  try {
+    const pr = req.body?.publishResults;
+    if (typeof pr !== "boolean") {
+      return res.status(400).json({ message: "publishResults boolean required" });
+    }
+    await Settings.findByIdAndUpdate(
+      "app",
+      { publishResults: pr },
+      { upsert: true, new: true }
+    );
+    return res.json({ publishResults: pr });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/admin/review-rows?classLabel=&subjectCode=
+ */
+export async function getReviewRows(req, res, next) {
+  try {
+    const q = await applyFacultyScopeToQuery(buildStudentQuery(req), req);
+    const students = await Student.find(q).lean();
+    const rows = [];
+    for (const s of students) {
+      const subs = s.subjects || [];
+      for (let i = 0; i < subs.length; i += 1) {
+        const sub = subs[i];
+        const pct = subjectTotalPercent(sub);
+        rows.push({
+          id: `${s._id.toString()}:${i}`,
+          studentId: s._id.toString(),
+          subIndex: i,
+          name: s.name ?? "",
+          roll: s.prn ?? "",
+          classLabel: s.classLabel ?? "",
+          subject: sub.name ?? sub.code ?? "",
+          subjectCode: sub.code ?? "",
+          total: sub.total ?? null,
+          percentage: pct != null ? Math.round(pct * 10000) / 10000 : null,
+          grade: sub.grade ?? "",
+          passFail: sub.result ?? "",
+        });
+      }
+    }
+    return res.json({ rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * DELETE /api/admin/students/marks
+ * Header: X-Confirm-Phrase: DELETE_ALL_MARKS
+ */
+export async function deleteAllMarks(req, res, next) {
+  try {
+    const phrase = req.headers["x-confirm-phrase"];
+    if (phrase !== "DELETE_ALL_MARKS") {
+      return res.status(400).json({
+        message: "Send header X-Confirm-Phrase: DELETE_ALL_MARKS",
+      });
+    }
+    const r = await Student.deleteMany({});
+    await Upload.deleteMany({});
+    return res.json({ ok: true, deletedStudents: r.deletedCount });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/admin/grade-bands-pooled?classLabel=
+ */
+export async function getGradeBandsPooled(req, res, next) {
+  try {
+    const q = await applyFacultyScopeToQuery(buildStudentQuery(req), req);
+    const students = await Student.find(q).lean();
+    const perSubject = computeGradeBands(students);
+    if (!perSubject.length) {
+      return res.json({ pooledBands: [], perSubject: [] });
+    }
+    const template = perSubject[0].bands.map((b) => ({
+      label: b.label,
+      gradeSymbol: b.gradeSymbol,
+      ise: 0,
+      mse: 0,
+      ese: 0,
+      total: 0,
+    }));
+    for (const sub of perSubject) {
+      sub.bands.forEach((b, i) => {
+        template[i].ise += b.ise;
+        template[i].mse += b.mse;
+        template[i].ese += b.ese;
+        template[i].total += b.total;
+      });
+    }
+    return res.json({ pooledBands: template, perSubject });
+  } catch (err) {
+    next(err);
+  }
+}
+
+function computePooledBandsInline(students) {
+  const perSubject = computeGradeBands(students);
+  if (!perSubject.length) return [];
+  const template = perSubject[0].bands.map((b) => ({
+    label: b.label,
+    gradeSymbol: b.gradeSymbol,
+    ise: 0,
+    mse: 0,
+    ese: 0,
+    total: 0,
+  }));
+  for (const sub of perSubject) {
+    sub.bands.forEach((b, i) => {
+      template[i].ise += b.ise;
+      template[i].mse += b.mse;
+      template[i].ese += b.ese;
+      template[i].total += b.total;
+    });
+  }
+  return template;
+}
+
+/**
+ * GET /api/admin/grade-bands-xlsx?classLabel=&subjectCode=
+ */
+export async function getGradeBandsXlsx(req, res, next) {
+  try {
+    const q = await applyFacultyScopeToQuery(buildStudentQuery(req), req);
+    const students = await Student.find(q).lean();
+    const perSubject = computeGradeBands(students);
+    const pooledBands = computePooledBandsInline(students);
+    const wb = XLSX.utils.book_new();
+
+    if (pooledBands.length) {
+      const ws = XLSX.utils.json_to_sheet(
+        pooledBands.map((b) => ({
+          Band: b.label,
+          Symbol: b.gradeSymbol,
+          ISE: b.ise,
+          MSE: b.mse,
+          ESE: b.ese,
+          Total: b.total,
+        }))
+      );
+      XLSX.utils.book_append_sheet(wb, ws, "Pooled");
+    }
+
+    for (const sub of perSubject) {
+      const name = (sub.subjectCode || sub.subjectName || "S").slice(0, 28);
+      const ws = XLSX.utils.json_to_sheet(
+        sub.bands.map((b) => ({
+          Band: b.label,
+          Symbol: b.gradeSymbol,
+          ISE: b.ise,
+          MSE: b.mse,
+          ESE: b.ese,
+          Total: b.total,
+        }))
+      );
+      XLSX.utils.book_append_sheet(wb, ws, name.replace(/[*?:/\\[\]]/g, "_"));
+    }
+
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="grade-bands.xlsx"'
+    );
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    return res.send(Buffer.from(buf));
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getAdminMeta(req, res, next) {
+  try {
+    const q = await applyFacultyScopeToQuery({}, req);
+    const classes = await Student.distinct("classLabel", q);
+    const subjectCodes = await Student.distinct("subjects.code", q);
+    return res.json({
+      classes: classes.filter(Boolean).sort(),
+      subjectCodes: subjectCodes.filter(Boolean).sort(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/admin/faculty-o-grade-distribution?classLabel=&semester=&subjectCode=
+ * Returns faculty-wise O-grade percentage in current class/semester/subject scope.
+ */
+export async function getFacultyOGradeDistribution(req, res, next) {
+  try {
+    const classLabel = trim(req.query.classLabel);
+    const subjectCode = trim(req.query.subjectCode);
+    const semesterRaw = req.query.semester;
+    const semester =
+      semesterRaw !== undefined && semesterRaw !== "" && Number.isFinite(Number(semesterRaw))
+        ? Number(semesterRaw)
+        : undefined;
+
+    const studentMatch = {};
+    if (classLabel) studentMatch.classLabel = classLabel;
+    if (semester !== undefined) studentMatch.semester = semester;
+
+    const pipeline = [
+      { $match: studentMatch },
+      { $unwind: "$subjects" },
+      ...(subjectCode ? [{ $match: { "subjects.code": subjectCode } }] : []),
+      {
+        $lookup: {
+          from: "uploads",
+          localField: "uploadId",
+          foreignField: "uploadId",
+          as: "upload",
+        },
+      },
+      { $unwind: "$upload" },
+      {
+        $group: {
+          _id: "$upload.facultyId",
+          total: { $sum: 1 },
+          oCount: {
+            $sum: {
+              $cond: [
+                {
+                  $regexMatch: {
+                    input: { $toUpper: { $trim: { input: { $ifNull: ["$subjects.grade", ""] } } } },
+                    regex: "^O$",
+                  },
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          facultyId: "$_id",
+          total: 1,
+          oCount: 1,
+          oPercentage: {
+            $cond: [
+              { $gt: ["$total", 0] },
+              { $multiply: [{ $divide: ["$oCount", "$total"] }, 100] },
+              0,
+            ],
+          },
+        },
+      },
+      { $sort: { oPercentage: -1 } },
+    ];
+
+    const rows = await Student.aggregate(pipeline);
+    const facultyIds = rows.map((r) => r.facultyId).filter(Boolean);
+    const users = facultyIds.length
+      ? await User.find({ role: "faculty", userId: { $in: facultyIds } })
+          .select("userId displayLabel")
+          .lean()
+      : [];
+    const labelByUserId = new Map(
+      users.map((u) => [u.userId, u.displayLabel || u.userId])
+    );
+
+    const distribution = rows.map((r) => ({
+      facultyId: r.facultyId,
+      facultyLabel: labelByUserId.get(r.facultyId) || r.facultyId,
+      total: r.total,
+      oCount: r.oCount,
+      oPercentage: Math.round(Number(r.oPercentage || 0) * 100) / 100,
+    }));
+
+    return res.json({ distribution });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getSemesterSubjectCatalog(_req, res) {
+  const settings = await Settings.findById("app").lean();
+  const fromSettings = Array.isArray(settings?.semesterSubjectCatalog)
+    ? settings.semesterSubjectCatalog
+    : [];
+  const semesters = fromSettings.length ? fromSettings : SEMESTER_SUBJECT_CATALOG;
+  return res.json({ semesters });
+}
+
+/**
+ * POST /api/admin/semester-subject-catalog/upload
+ * multipart/form-data { file: .xlsx/.xls }
+ * Expected headers in first sheet: Semester, Subject Code, Subject Name
+ */
+export async function uploadSemesterSubjectCatalog(req, res, next) {
+  try {
+    if (!req.file?.buffer) {
+      return res.status(400).json({ message: "Excel file is required." });
+    }
+    const semesterRaw = req.body?.semester;
+    const forcedSemester =
+      semesterRaw !== undefined && semesterRaw !== ""
+        ? Number(semesterRaw)
+        : undefined;
+    if (
+      forcedSemester !== undefined &&
+      (!Number.isFinite(forcedSemester) || forcedSemester < 1 || forcedSemester > 8)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "semester must be a number between 1 and 8." });
+    }
+
+    const parsed = parseSemesterCatalogWorkbook(req.file.buffer, forcedSemester);
+    if (!parsed.length) {
+      return res.status(400).json({
+        message:
+          "No valid rows found. Use columns: Semester, Subject Code, Subject Name.",
+      });
+    }
+
+    const currentSettings = await Settings.findById("app").lean();
+    const mergedCatalog = mergeSemesterCatalog(
+      currentSettings?.semesterSubjectCatalog || [],
+      parsed
+    );
+
+    await Settings.findByIdAndUpdate(
+      "app",
+      { semesterSubjectCatalog: mergedCatalog },
+      { upsert: true, new: true }
+    );
+
+    const bulkOps = [];
+    for (const semRow of mergedCatalog) {
+      const semester = Number(semRow?.semester);
+      const subjects = Array.isArray(semRow?.subjects) ? semRow.subjects : [];
+      for (const sub of subjects) {
+        const subject_code = String(sub?.code || "").trim();
+        const subject_name = String(sub?.name || "").trim();
+        if (!Number.isFinite(semester) || !subject_code || !subject_name) continue;
+        bulkOps.push({
+          updateOne: {
+            filter: { semester, subject_code },
+            update: { $set: { semester, subject_code, subject_name } },
+            upsert: true,
+          },
+        });
+      }
+    }
+    if (bulkOps.length) {
+      await Subject.bulkWrite(bulkOps, { ordered: false });
+    }
+
+    return res.json({
+      ok: true,
+      subjectsSaved: bulkOps.length,
+      semesters: mergedCatalog,
+      message: "Semester subject catalog updated successfully.",
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/admin/semester-subject-catalog/template
+ * Downloads an Excel template for subject catalog uploads.
+ */
+export async function downloadSemesterSubjectCatalogTemplate(_req, res, next) {
+  try {
+    const templatePath =
+      process.env.SUBJECT_TEMPLATE_PATH ||
+      "C:\\Users\\soham\\Downloads\\Subjects_Template.xlsx";
+    if (!fs.existsSync(templatePath)) {
+      return res.status(404).json({ message: "Template file not found at configured path." });
+    }
+    return res.download(templatePath, "Subjects_Template.xlsx");
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function patchFacultyClasses(req, res, next) {
+  try {
+    const { userId } = req.params;
+    const arr = req.body?.assignedClasses;
+    if (!Array.isArray(arr)) {
+      return res.status(400).json({ message: "assignedClasses array required" });
+    }
+    const clean = arr.map((c) => String(c).trim()).filter(Boolean);
+    const u = await User.findOneAndUpdate(
+      { userId: userId?.trim(), role: "faculty" },
+      { assignedClasses: clean },
+      { new: true }
+    ).lean();
+    if (!u) return res.status(404).json({ message: "Faculty not found" });
+    return res.json(u);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listFaculty(req, res, next) {
+  try {
+    await ensureMentorFacultyUsers();
+    const users = await User.find({ role: "faculty" })
+      .select(
+        "userId displayLabel email contact subjectCodes semesterSubjectAssignments assignedClasses"
+      )
+      .lean();
+    const counts = await Upload.aggregate([
+      { $group: { _id: "$facultyId", uploadCount: { $sum: 1 } } },
+    ]);
+    const countByFacultyId = new Map(
+      counts.map((row) => [String(row?._id || "").trim(), Number(row?.uploadCount || 0)])
+    );
+    return res.json(
+      users.map((u) => ({
+        ...u,
+        uploadCount: countByFacultyId.get(String(u?.userId || "").trim()) || 0,
+      }))
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * DELETE /api/admin/faculty/:userId
+ * Removes the faculty user and all uploads + student marks tied to their uploadIds.
+ * Clears class teacher assignments pointing at this user.
+ */
+export async function deleteFaculty(req, res, next) {
+  try {
+    const userId = trim(req.params?.userId);
+    if (!userId) {
+      return res.status(400).json({ message: "userId required" });
+    }
+    if (staticMentorUserIds().has(userId)) {
+      return res.status(400).json({
+        message:
+          "This account is part of the built-in faculty roster and cannot be deleted here.",
+      });
+    }
+
+    const existing = await User.findOne({ userId, role: "faculty" });
+    if (!existing) {
+      return res.status(404).json({ message: "Faculty not found" });
+    }
+
+    const uploads = await Upload.find({ facultyId: userId }).select("uploadId").lean();
+    const uploadIds = uploads.map((u) => trim(u?.uploadId)).filter(Boolean);
+    if (uploadIds.length) {
+      await Student.deleteMany({ uploadId: { $in: uploadIds } });
+    }
+    await Upload.deleteMany({ facultyId: userId });
+    await SchoolClass.updateMany({ teacherUserId: userId }, { $set: { teacherUserId: "" } });
+    await User.deleteOne({ _id: existing._id });
+
+    return res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createFaculty(req, res, next) {
+  try {
+    const { userId, displayLabel, email, contact, password } = req.body ?? {};
+    if (!userId || typeof userId !== "string" || !userId.trim()) {
+      return res.status(400).json({ message: "userId required" });
+    }
+    if (
+      password === undefined ||
+      password === null ||
+      typeof password !== "string" ||
+      password.length < 6
+    ) {
+      return res.status(400).json({ message: "password required (at least 6 characters)" });
+    }
+    const passwordHash = await bcrypt.hash(password, 10);
+    const u = await User.create({
+      userId: userId.trim(),
+      displayLabel: displayLabel ? String(displayLabel).trim() : "",
+      email: email != null && String(email).trim() ? String(email).trim().toLowerCase() : "",
+      contact: contact != null ? String(contact).trim() : "",
+      role: "faculty",
+      passwordHash,
+      subjectCodes: [],
+      semesterSubjectAssignments: [],
+      assignedClasses: [],
+    });
+    return res.status(201).json({
+      userId: u.userId,
+      displayLabel: u.displayLabel,
+      email: u.email,
+      contact: u.contact,
+      subjectCodes: u.subjectCodes,
+      semesterSubjectAssignments: u.semesterSubjectAssignments,
+      assignedClasses: u.assignedClasses,
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: "User id already exists" });
+    }
+    next(err);
+  }
+}
+
+export async function patchFacultySubjects(req, res, next) {
+  try {
+    const { userId } = req.params;
+    const codes = req.body?.subjectCodes;
+    if (!Array.isArray(codes)) {
+      return res.status(400).json({ message: "subjectCodes array required" });
+    }
+    const clean = codes.map((c) => String(c).trim()).filter(Boolean);
+    const u = await User.findOneAndUpdate(
+      { userId: userId?.trim(), role: "faculty" },
+      { subjectCodes: clean },
+      { new: true }
+    ).lean();
+    if (!u) return res.status(404).json({ message: "Faculty not found" });
+    return res.json(u);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/admin/faculty/:userId/semester-subjects
+ * Body: { semester: number, subjectCodes: string[] }
+ */
+export async function patchFacultySemesterSubjects(req, res, next) {
+  try {
+    const { userId } = req.params;
+    const sem = Number(req.body?.semester);
+    const codes = req.body?.subjectCodes;
+    if (!Number.isFinite(sem)) {
+      return res.status(400).json({ message: "semester number required" });
+    }
+    if (!Array.isArray(codes)) {
+      return res.status(400).json({ message: "subjectCodes array required" });
+    }
+    const clean = dedupeSubjectCodes(codes);
+
+    const user = await User.findOne({ userId: userId?.trim(), role: "faculty" }).lean();
+    if (!user) return res.status(404).json({ message: "Faculty not found" });
+
+    const current = normalizeSemesterAssignments(user.semesterSubjectAssignments || []);
+    const next = current.filter((r) => r.semester !== sem);
+    next.push({ semester: sem, subjectCodes: clean });
+    const normalized = normalizeSemesterAssignments(next);
+    const mergedCodes = mergedSubjectCodesFromAssignments(normalized);
+
+    const updated = await User.findOneAndUpdate(
+      { userId: userId?.trim(), role: "faculty" },
+      {
+        semesterSubjectAssignments: normalized,
+        subjectCodes: mergedCodes,
+      },
+      { new: true }
+    ).lean();
+
+    return res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listClasses(req, res, next) {
+  try {
+    const list = await SchoolClass.find().sort({ classLabel: 1 }).lean();
+    return res.json(list);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listFacultyUploads(req, res, next) {
+  try {
+    const userId = trim(req.params?.userId);
+    if (!userId) {
+      return res.status(400).json({ message: "userId required" });
+    }
+    const uploads = await Upload.find({ facultyId: userId })
+      .select("uploadId classLabel createdAt rowCount")
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.json({ uploads });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createClass(req, res, next) {
+  try {
+    const { classLabel, teacherUserId } = req.body ?? {};
+    if (!classLabel || typeof classLabel !== "string") {
+      return res.status(400).json({ message: "classLabel required" });
+    }
+    const doc = await SchoolClass.create({
+      classLabel: classLabel.trim(),
+      teacherUserId: teacherUserId ? String(teacherUserId).trim() : "",
+      curriculum: [],
+    });
+    return res.status(201).json(doc);
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: "Class already exists" });
+    }
+    next(err);
+  }
+}
+
+export async function patchClassTeacher(req, res, next) {
+  try {
+    const label = decodeURIComponent(req.params.classLabel || "").trim();
+    const { teacherUserId } = req.body ?? {};
+    const doc = await SchoolClass.findOneAndUpdate(
+      { classLabel: label },
+      { teacherUserId: teacherUserId != null ? String(teacherUserId).trim() : "" },
+      { new: true }
+    ).lean();
+    if (!doc) return res.status(404).json({ message: "Class not found" });
+    return res.json(doc);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function patchClassCurriculum(req, res, next) {
+  try {
+    const label = decodeURIComponent(req.params.classLabel || "").trim();
+    const raw = req.body?.subjectsText ?? req.body?.curriculum;
+    let lines = [];
+    if (typeof raw === "string") {
+      lines = raw
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+    } else if (Array.isArray(raw)) {
+      lines = raw.map((l) => String(l).trim()).filter(Boolean);
+    }
+    const doc = await SchoolClass.findOneAndUpdate(
+      { classLabel: label },
+      { curriculum: lines },
+      { new: true }
+    ).lean();
+    if (!doc) return res.status(404).json({ message: "Class not found" });
+    return res.json(doc);
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==================== FILE: server\src\controllers\facultyController.js ====================
+
+import bcrypt from "bcryptjs";
+import { User } from "../models/User.js";
+
+function normalizeFaculty(user) {
+  return {
+    userId: user.userId,
+    displayLabel: user.displayLabel || "",
+    email: user.email || "",
+    contact: user.contact || "",
+    subjectCodes: Array.isArray(user.subjectCodes) ? user.subjectCodes : [],
+    semesterSubjectAssignments: Array.isArray(user.semesterSubjectAssignments)
+      ? user.semesterSubjectAssignments
+      : [],
+    assignedClasses: Array.isArray(user.assignedClasses) ? user.assignedClasses : [],
+  };
+}
+
+/**
+ * GET /api/faculty/me
+ */
+export async function getMyProfile(req, res, next) {
+  try {
+    const userId = String(req.user?.userId || "").trim();
+    if (!userId) {
+      return res.status(401).json({ message: "Invalid authenticated user." });
+    }
+    const doc = await User.findOne({ userId, role: "faculty" }).lean();
+    if (!doc) {
+      return res.status(404).json({ message: "Faculty profile not found." });
+    }
+    return res.json(normalizeFaculty(doc));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/faculty/me
+ * Body: { displayLabel?, email?, contact?, password? }
+ */
+export async function patchMyProfile(req, res, next) {
+  try {
+    const userId = String(req.user?.userId || "").trim();
+    if (!userId) {
+      return res.status(401).json({ message: "Invalid authenticated user." });
+    }
+    const { displayLabel, email, contact, currentPassword, newPassword, password } = req.body ?? {};
+
+    /** @type {Record<string, unknown>} */
+    const update = {};
+    if (displayLabel !== undefined) {
+      update.displayLabel = String(displayLabel || "").trim();
+    }
+    if (email !== undefined) {
+      update.email = String(email || "").trim().toLowerCase();
+    }
+    if (contact !== undefined) {
+      update.contact = String(contact || "").trim();
+    }
+    const requestedPassword =
+      newPassword !== undefined ? newPassword : password !== undefined ? password : undefined;
+    if (requestedPassword !== undefined) {
+      if (typeof requestedPassword !== "string" || requestedPassword.length < 6) {
+        return res
+          .status(400)
+          .json({ message: "password must be at least 6 characters when provided." });
+      }
+      if (typeof currentPassword !== "string" || currentPassword.length === 0) {
+        return res
+          .status(400)
+          .json({ message: "currentPassword is required to change password." });
+      }
+      const existing = await User.findOne({ userId, role: "faculty" }).select("+passwordHash");
+      if (!existing) {
+        return res.status(404).json({ message: "Faculty profile not found." });
+      }
+      const ok = await bcrypt.compare(currentPassword, existing.passwordHash || "");
+      if (!ok) {
+        return res.status(400).json({ message: "Current password is incorrect." });
+      }
+      update.passwordHash = await bcrypt.hash(requestedPassword, 10);
+    }
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ message: "No profile fields provided to update." });
+    }
+
+    const doc = await User.findOneAndUpdate(
+      { userId, role: "faculty" },
+      update,
+      { new: true }
+    ).lean();
+    if (!doc) {
+      return res.status(404).json({ message: "Faculty profile not found." });
+    }
+    return res.json(normalizeFaculty(doc));
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+
+==================== FILE: server\src\controllers\uploadController.js ====================
+
+import * as XLSX from "xlsx";
+import fs from "node:fs";
+import mongoose from "mongoose";
+import { Student, Upload } from "../models/index.js";
+import {
+  formatIdentifier,
+  getCell,
+  getSubjectCell,
+  normalizeHeaderKey,
+} from "../utils/excelRowMap.js";
+
+function trimStr(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+function parseNumber(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const s = String(value).trim().replace(/%$/u, "");
+  if (s === "") return undefined;
+  const n = Number(s);
+  if (Number.isFinite(n)) return n;
+  const digits = s.match(/\d+/u);
+  if (digits) {
+    const nd = Number(digits[0]);
+    if (Number.isFinite(nd)) return nd;
+  }
+  return undefined;
+}
+
+function parseNumberLoose(value) {
+  if (value === undefined || value === null || value === "" || value === "-") {
+    return undefined;
+  }
+  return parseNumber(value);
+}
+
+function deriveClassLabel(branch, semester) {
+  const b = trimStr(branch).toUpperCase().replace(/\s+/gu, "");
+  const sem = parseNumber(semester);
+  if (!b || sem === undefined) return "";
+  return `${b}-SEM${sem}`;
+}
+
+function buildSubjectsFromRow(row) {
+  const subjects = [];
+  for (let i = 1; i <= 15; i += 1) {
+    const name = trimStr(getSubjectCell(row, i, "NM"));
+    if (!name) continue;
+    subjects.push({
+      code: trimStr(getSubjectCell(row, i, "CD")),
+      name,
+      internal: parseNumber(getSubjectCell(row, i, "IA")),
+      ise2: parseNumber(getSubjectCell(row, i, "IA2")),
+      mse: parseNumber(getSubjectCell(row, i, "MSE")),
+      external: parseNumber(getSubjectCell(row, i, "ESE")),
+      total: parseNumber(getSubjectCell(row, i, "TOT")),
+      grade: trimStr(getSubjectCell(row, i, "GR")),
+      credits: parseNumber(getSubjectCell(row, i, "CR")),
+      result: trimStr(getSubjectCell(row, i, "R")),
+    });
+  }
+  return subjects;
+}
+
+function mapRowToStudent(row, { uploadId, classLabel }) {
+  const semesterFromRow = parseNumber(
+    getCell(row, "SEM", "SEMESTER", "SEM NO", "SEMNO", "TERM")
+  );
+  const semesterFromClassLabel = detectSemesterFromText(classLabel);
+  const semester = semesterFromRow ?? semesterFromClassLabel;
+  const branch = trimStr(
+    getCell(
+      row,
+      "BRANCH",
+      "DEPT",
+      "DEPARTMENT",
+      "PROGRAM",
+      "STREAM",
+      "SPECIALIZATION_MAJOR",
+      "COURSE_CODE"
+    )
+  );
+  const examMonth = trimStr(getCell(row, "MONTH", "MON", "EXAM MONTH"));
+  const examYear = parseNumber(getCell(row, "YEAR", "EXAM YEAR", "YR"));
+
+  return {
+    name: trimStr(
+      getCell(
+        row,
+        "NAME",
+        "STUDENT NAME",
+        "STUDENTNAME",
+        "CANDIDATE NAME",
+        "NAME OF THE STUDENT",
+        "STUDENT"
+      )
+    ),
+    prn: formatIdentifier(
+      getCell(row, "PRN", "USN", "ROLL", "ROLL NO", "ROLLNO", "ENROLLMENT NO", "REG NO", "REGNO")
+    ),
+    seatNo: trimStr(getCell(row, "SEAT NO", "SEATNO", "SEAT", "SEAT NUMBER")),
+    semester,
+    examMonth,
+    examYear,
+    branch,
+    sgpa: parseNumber(getCell(row, "SGPA", "S.GPA")),
+    cgpa: parseNumber(getCell(row, "CGPA", "C.GPA")),
+    totalMarks: parseNumber(
+      getCell(row, "TOTAL", "TOTAL MARKS", "GRAND TOTAL", "TOT_MRKS")
+    ),
+    percentage: parseNumber(
+      getCell(row, "PERCENTAGE", "PERCENT", "AGGREGATE %", "%", "PERCENTAGE OF MARKS")
+    ),
+    result: trimStr(getCell(row, "RESULT", "OVERALL RESULT", "STATUS")),
+    uploadId,
+    classLabel,
+    subjects: buildSubjectsFromRow(row),
+  };
+}
+
+function isRowEmpty(row) {
+  const name = trimStr(
+    getCell(
+      row,
+      "NAME",
+      "STUDENT NAME",
+      "STUDENTNAME",
+      "CANDIDATE NAME",
+      "NAME OF THE STUDENT"
+    )
+  );
+  const prn = formatIdentifier(
+    getCell(row, "PRN", "USN", "ROLL", "ROLL NO", "ROLLNO", "ENROLLMENT NO", "REG NO")
+  );
+  return !name && !prn;
+}
+
+const REQUIRED_DETAILED_RESULT_HEADERS = [
+  "NAME OF THE STUDENT",
+  "PRN",
+  "SEM",
+  "PERCENT",
+  "RESULT",
+  "SUB1NM",
+  "SUB1",
+];
+
+function validateMandatoryDetailedResultHeaders(rows) {
+  const firstRow = rows?.[0];
+  if (!firstRow || typeof firstRow !== "object") {
+    return { ok: false, missing: REQUIRED_DETAILED_RESULT_HEADERS };
+  }
+  const available = new Set(
+    Object.keys(firstRow).map((k) => normalizeHeaderKey(k))
+  );
+  const missing = REQUIRED_DETAILED_RESULT_HEADERS.filter(
+    (h) => !available.has(normalizeHeaderKey(h))
+  );
+  return { ok: missing.length === 0, missing };
+}
+
+function normalizeText(v) {
+  return String(v ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "");
+}
+
+function detectSemesterFromText(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return undefined;
+  const m1 = s.match(/\bsem(?:ester)?\s*[-: ]*\s*([1-8])\b/i);
+  if (m1) return Number(m1[1]);
+  const m2 = s.match(/\b([1-8])\s*(?:st|nd|rd|th)?\s*sem(?:ester)?\b/i);
+  if (m2) return Number(m2[1]);
+  return undefined;
+}
+
+function isMongoTxnUnsupported(err) {
+  const msg = String(err?.message || "");
+  return (
+    err?.code === 20 ||
+    /Transaction numbers are only allowed on a replica set member or mongos/i.test(msg)
+  );
+}
+
+function isContineoMatrixHeaderRow(row) {
+  const need = ["SLNO", "USN", "ROLLNO", "NAME"];
+  const got = new Set((Array.isArray(row) ? row : []).map((x) => normalizeText(x)));
+  return need.every((k) => got.has(k));
+}
+
+function locateContineoLayout(rows) {
+  const all = Array.isArray(rows) ? rows : [];
+  let headerIndex = -1;
+  for (let i = 0; i < Math.min(all.length, 12); i += 1) {
+    if (isContineoMatrixHeaderRow(all[i])) {
+      headerIndex = i;
+      break;
+    }
+  }
+  if (headerIndex < 0) return null;
+  const titleIndex = headerIndex;
+  const componentIndex = Math.min(headerIndex + 1, all.length - 1);
+  const dataStartIndex = Math.min(headerIndex + 2, all.length);
+  return { titleIndex, headerIndex, componentIndex, dataStartIndex };
+}
+
+function isContineoMatrix(rows) {
+  return locateContineoLayout(rows) !== null;
+}
+
+function parseContineoRows(rows, { uploadId, bodyClassLabel, sheetName }) {
+  const layout = locateContineoLayout(rows);
+  if (!layout) {
+    return { studentsPayload: [], subjectsFound: 0, uploadMeta: null };
+  }
+  let inferredSemester = detectSemesterFromText(bodyClassLabel);
+  if (inferredSemester == null) {
+    inferredSemester = detectSemesterFromText(sheetName);
+  }
+  if (inferredSemester == null) {
+    for (let r = 0; r < Math.min(rows.length, 16); r += 1) {
+      const row = Array.isArray(rows[r]) ? rows[r] : [];
+      for (const cell of row) {
+        const sem = detectSemesterFromText(cell);
+        if (sem != null) {
+          inferredSemester = sem;
+          break;
+        }
+      }
+      if (inferredSemester != null) break;
+    }
+  }
+  const headerRow = rows[layout.headerIndex] || [];
+  const titleRow = rows[layout.titleIndex] || [];
+  const componentRow = rows[layout.componentIndex] || [];
+  const summaryStart = headerRow.findIndex(
+    (v) => normalizeText(v) === "CRDTREGDINCRNTSEM"
+  );
+  const summaryStartFromComponent = componentRow.findIndex(
+    (v) => normalizeText(v) === "CRDTREGDINCRNTSEM"
+  );
+  const summaryStartFromSemesterSummary = headerRow.findIndex(
+    (v) => normalizeText(v) === "SEMESTERSUMMARY"
+  );
+  const summaryBoundaryCandidates = [
+    summaryStart,
+    summaryStartFromComponent,
+    summaryStartFromSemesterSummary,
+  ].filter((n) => Number.isInteger(n) && n >= 0);
+  const resolvedSummaryStart =
+    summaryBoundaryCandidates.length > 0
+      ? Math.min(...summaryBoundaryCandidates)
+      : -1;
+
+  const subjectStarts = [];
+  for (let col = 7; col < headerRow.length; col += 1) {
+    if (resolvedSummaryStart !== -1 && col >= resolvedSummaryStart) break;
+    const code = trimStr(headerRow[col]);
+    if (!code) continue;
+    subjectStarts.push(col);
+  }
+
+  const blocks = subjectStarts.map((start, i) => {
+    const end =
+      i + 1 < subjectStarts.length
+        ? subjectStarts[i + 1] - 1
+        : resolvedSummaryStart > 0
+          ? resolvedSummaryStart - 1
+          : headerRow.length - 1;
+    const lookup = {};
+    for (let c = start; c <= end; c += 1) {
+      lookup[normalizeText(componentRow[c])] = c;
+    }
+    return {
+      start,
+      end,
+      code: trimStr(headerRow[start]),
+      name: trimStr(titleRow[start]),
+      colIseTh: lookup.ISETH,
+      colIsePr: lookup.ISEPRISETU,
+      colMse: lookup.MSE,
+      colEse: lookup.ESE,
+      colTotal: lookup.TOTAL,
+      colGrade: lookup.GR,
+      colCredits: lookup.CRE,
+    };
+  });
+
+  const studentsPayload = [];
+  let subjectsFound = 0;
+  let uploadMeta = null;
+
+  // Common columns in this matrix format
+  const COL_USN = 1;
+  const COL_ROLL = 2;
+  const COL_NAME = 3;
+  const COL_SECTION = 4;
+  const COL_SGPA = 112;
+  const COL_CGPA = 118;
+  const COL_REMARKS = 120;
+  const COL_FAILED = 121;
+
+  for (let r = layout.dataStartIndex; r < rows.length; r += 1) {
+    const row = rows[r] || [];
+    const name = trimStr(row[COL_NAME]);
+    const prn = formatIdentifier(row[COL_USN]);
+    if (!name && !prn) continue;
+
+    const section = trimStr(row[COL_SECTION]);
+    const classLabel = bodyClassLabel || section || "";
+    const sgpa = parseNumberLoose(row[COL_SGPA]);
+    const cgpa = parseNumberLoose(row[COL_CGPA]);
+    const remarks = trimStr(row[COL_REMARKS]);
+    const failedCourses = trimStr(row[COL_FAILED]);
+    const result =
+      remarks ||
+      (failedCourses ? "Fail" : "");
+    const percentage =
+      sgpa != null && Number.isFinite(Number(sgpa)) ? Number(sgpa) * 10 : undefined;
+
+    const subjects = [];
+    for (const b of blocks) {
+      const grade = trimStr(row[b.colGrade]);
+      const total = parseNumberLoose(row[b.colTotal]);
+      const hasAny =
+        grade ||
+        total != null ||
+        parseNumberLoose(row[b.colIseTh]) != null ||
+        parseNumberLoose(row[b.colIsePr]) != null ||
+        parseNumberLoose(row[b.colMse]) != null ||
+        parseNumberLoose(row[b.colEse]) != null;
+      if (!hasAny) continue;
+
+      const gUpper = grade.toUpperCase();
+      const subResult = gUpper === "F" ? "Fail" : grade ? "Pass" : "";
+      subjects.push({
+        code: b.code,
+        name: b.name || b.code,
+        internal: parseNumberLoose(row[b.colIseTh]),
+        ise2: parseNumberLoose(row[b.colIsePr]),
+        mse: parseNumberLoose(row[b.colMse]),
+        external: parseNumberLoose(row[b.colEse]),
+        total,
+        grade,
+        credits: parseNumberLoose(row[b.colCredits]),
+        result: subResult,
+      });
+    }
+
+    if (!subjects.length) continue;
+    subjectsFound += subjects.length;
+    const studentDoc = {
+      name,
+      prn,
+      seatNo: trimStr(row[COL_ROLL]),
+      semester: inferredSemester,
+      examMonth: "",
+      examYear: undefined,
+      branch: "",
+      sgpa,
+      cgpa,
+      totalMarks: undefined,
+      percentage,
+      result,
+      uploadId,
+      classLabel,
+      subjects,
+    };
+    studentsPayload.push(studentDoc);
+
+    if (!uploadMeta) {
+      uploadMeta = {
+        classLabel,
+        semester: inferredSemester,
+        examMonth: "",
+        examYear: undefined,
+        branch: "",
+      };
+    }
+  }
+
+  return { studentsPayload, subjectsFound, uploadMeta };
+}
+
+/**
+ * GET /api/upload/template
+ * Downloads template Excel for faculty marks upload.
+ */
+export async function downloadUploadTemplate(_req, res, next) {
+  try {
+    const templatePath =
+      process.env.MARKS_UPLOAD_TEMPLATE_PATH ||
+      "C:\\Users\\soham\\Downloads\\sem3_results_outline (1).xlsx";
+    if (!fs.existsSync(templatePath)) {
+      return res.status(404).json({
+        error: "Not Found",
+        message: "Upload template file not found on server.",
+      });
+    }
+    return res.download(templatePath, "marks-upload-template.xlsx");
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/upload — multipart field `file` (faculty only).
+ * Body (optional): `classLabel` — overrides per-row derivation when provided.
+ */
+export async function uploadSpreadsheet(req, res, next) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: 'Missing file. Send multipart/form-data with field name "file".',
+      });
+    }
+
+    if (!req.file.buffer || !Buffer.isBuffer(req.file.buffer)) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "Uploaded file could not be read.",
+      });
+    }
+
+    if (req.file.size === 0) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "Uploaded file is empty.",
+      });
+    }
+
+    const facultyId = req.user?.userId;
+
+    if (!facultyId) {
+      return res.status(401).json({
+        error: "Unauthorized",
+        message: "Authenticated user is missing userId.",
+      });
+    }
+
+    const uploadId = `${facultyId}-${Date.now()}`;
+    const bodyClassLabel = trimStr(req.body?.classLabel);
+
+    let workbook;
+    try {
+      workbook = XLSX.read(req.file.buffer, {
+        type: "buffer",
+        cellDates: true,
+        cellNF: false,
+        cellText: false,
+      });
+    } catch (err) {
+      console.error("[upload] XLSX.read failed:", err);
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "The file is not a valid Excel workbook or could not be parsed.",
+      });
+    }
+
+    const sheetNames = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
+    if (sheetNames.length !== 1) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message:
+          "Invalid format. Upload must contain exactly one worksheet with the required column structure.",
+      });
+    }
+
+    // Sheet/file name is not enforced; structure is enforced via required headers below.
+    const [onlySheetName] = sheetNames;
+    const sheet = workbook.Sheets[onlySheetName];
+    let rows;
+    try {
+      rows = XLSX.utils.sheet_to_json(sheet, {
+        defval: "",
+        raw: false,
+      });
+    } catch (err) {
+      console.error("[upload] sheet_to_json failed:", err);
+      return res.status(400).json({
+        error: "Bad Request",
+        message: 'Could not convert worksheet "DetailedResultSheet" to rows.',
+      });
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: 'Worksheet "DetailedResultSheet" has no data rows.',
+      });
+    }
+
+    let studentsPayload = [];
+    let subjectsFound = 0;
+    let uploadMeta = null;
+
+    const headerCheck = validateMandatoryDetailedResultHeaders(rows);
+    if (headerCheck.ok) {
+      for (const row of rows) {
+        if (isRowEmpty(row)) continue;
+
+        const semester = parseNumber(
+          getCell(row, "SEM", "SEMESTER", "SEM NO", "SEMNO", "TERM")
+        );
+        const branch = trimStr(
+          getCell(
+            row,
+            "BRANCH",
+            "DEPT",
+            "DEPARTMENT",
+            "STREAM",
+            "SPECIALIZATION_MAJOR",
+            "COURSE_CODE"
+          )
+        );
+        const classLabel =
+          bodyClassLabel ||
+          trimStr(
+            getCell(
+              row,
+              "CLASS",
+              "CLASS LABEL",
+              "CLASSLABEL",
+              "DIVISION",
+              "DIV",
+              "SECTION",
+              "BATCH"
+            )
+          ) ||
+          deriveClassLabel(branch, semester);
+
+        const studentDoc = mapRowToStudent(row, { uploadId, classLabel });
+        subjectsFound += studentDoc.subjects.length;
+        studentsPayload.push(studentDoc);
+
+        if (!uploadMeta) {
+          const semesterFromClassLabel = detectSemesterFromText(classLabel);
+          uploadMeta = {
+            classLabel,
+            semester: semester ?? semesterFromClassLabel,
+            examMonth: trimStr(getCell(row, "MONTH", "MON", "EXAM MONTH")),
+            examYear: parseNumber(getCell(row, "YEAR", "EXAM YEAR")),
+            branch,
+          };
+        }
+      }
+    } else {
+      let matrixRows;
+      try {
+        matrixRows = XLSX.utils.sheet_to_json(sheet, {
+          header: 1,
+          defval: "",
+          raw: false,
+        });
+      } catch {
+        matrixRows = [];
+      }
+      if (!isContineoMatrix(matrixRows)) {
+        return res.status(400).json({
+          error: "Bad Request",
+          message:
+            "Invalid sheet structure. Expected either DetailedResultSheet columns or Contineo matrix format.",
+        });
+      }
+      const parsed = parseContineoRows(matrixRows, {
+        uploadId,
+        bodyClassLabel,
+        sheetName: onlySheetName,
+      });
+      studentsPayload = parsed.studentsPayload;
+      subjectsFound = parsed.subjectsFound;
+      uploadMeta = parsed.uploadMeta;
+    }
+
+    if (studentsPayload.length === 0) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message:
+          "No student rows found. Ensure name and PRN/USN/Roll columns are present (see template column names).",
+      });
+    }
+
+    const rowCount = studentsPayload.length;
+
+    const uploadDoc = {
+      uploadId,
+      facultyId,
+      originalFileName: trimStr(req.file.originalname),
+      fileMimeType: trimStr(req.file.mimetype),
+      fileSizeBytes: req.file.size,
+      fileBuffer: req.file.buffer,
+      classLabel: uploadMeta?.classLabel ?? bodyClassLabel ?? "",
+      semester: uploadMeta?.semester,
+      examMonth: uploadMeta?.examMonth,
+      examYear: uploadMeta?.examYear,
+      branch: uploadMeta?.branch,
+      rowCount,
+      createdAt: new Date(),
+    };
+
+    const mongoUri = process.env.MONGO_URI;
+    if (!mongoUri) {
+      console.error("[upload] MONGO_URI is not configured");
+      return res.status(500).json({
+        error: "Server configuration error",
+        message: "Database is not configured.",
+      });
+    }
+
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        error: "Service Unavailable",
+        message: "Database connection is not ready. Try again shortly.",
+      });
+    }
+
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        await Upload.create([uploadDoc], { session });
+        await Student.insertMany(studentsPayload, {
+          session,
+          ordered: true,
+        });
+      });
+    } catch (err) {
+      if (isMongoTxnUnsupported(err)) {
+        // Local standalone MongoDB does not support transactions.
+        try {
+          const createdUpload = await Upload.create(uploadDoc);
+          try {
+            await Student.insertMany(studentsPayload, { ordered: true });
+          } catch (insertErr) {
+            await Upload.deleteOne({ _id: createdUpload._id });
+            throw insertErr;
+          }
+          return res.status(201).json({
+            uploadId,
+            rowCount,
+            subjectsFound,
+          });
+        } catch (fallbackErr) {
+          console.error("[upload] Non-transaction fallback failed:", fallbackErr);
+          if (fallbackErr?.code === 11000) {
+            return res.status(409).json({
+              error: "Conflict",
+              message: "Upload id or related unique constraint conflict. Retry the upload.",
+            });
+          }
+          if (fallbackErr?.name === "ValidationError") {
+            return res.status(400).json({
+              error: "Validation Error",
+              message: fallbackErr.message || "Student or upload data failed validation.",
+            });
+          }
+          return res.status(500).json({
+            error: "Internal Server Error",
+            message: "Failed to persist upload data.",
+          });
+        }
+      }
+
+      console.error("[upload] Transaction failed:", err);
+      if (err?.code === 11000) {
+        return res.status(409).json({
+          error: "Conflict",
+          message: "Upload id or related unique constraint conflict. Retry the upload.",
+        });
+      }
+      if (err?.name === "ValidationError") {
+        return res.status(400).json({
+          error: "Validation Error",
+          message: err.message || "Student or upload data failed validation.",
+        });
+      }
+      return res.status(500).json({
+        error: "Internal Server Error",
+        message: "Failed to persist upload data.",
+      });
+    } finally {
+      session.endSession();
+    }
+
+    return res.status(201).json({
+      uploadId,
+      rowCount,
+      subjectsFound,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==================== FILE: server\src\controllers\uploadRecordsController.js ====================
+
+import { Student, Upload } from "../models/index.js";
+import { subjectTotalPercent } from "../utils/gradeBandAnalysis.js";
+import { formatIdentifier } from "../utils/excelRowMap.js";
+
+function classifyOutcome(resultRaw) {
+  const s = String(resultRaw ?? "").trim();
+  if (!s) return "unknown";
+  if (/fail|f\.?\s*t\.?|withheld|absent|disc(?:ontinued)?/iu.test(s)) return "fail";
+  if (/pass|successful|complete|first\s*class|dist(?:inction)?|sat|cleared/iu.test(s)) {
+    return "pass";
+  }
+  return "unknown";
+}
+
+function bucketLabel(index) {
+  if (index < 0 || index > 19) return "unknown";
+  if (index === 19) return "95-100";
+  const lo = index * 5;
+  const hi = lo + 5;
+  return `${lo}-${hi}`;
+}
+
+function bucketIndexForPercentage(pct) {
+  if (pct == null || !Number.isFinite(pct)) return null;
+  const clamped = Math.max(0, Math.min(100, pct));
+  return Math.min(19, Math.floor(clamped / 5));
+}
+
+function trimStr(v) {
+  if (v === undefined || v === null) return "";
+  return String(v).trim();
+}
+
+function allowedSubjectSet(req) {
+  const list = Array.isArray(req.user?.subjectCodes) ? req.user.subjectCodes : [];
+  return new Set(list.map((c) => trimStr(c)).filter(Boolean));
+}
+
+function filterSubjectsByRole(req, subjects) {
+  const subs = Array.isArray(subjects) ? subjects : [];
+  if (req.user?.role !== "faculty") return subs;
+  const allow = allowedSubjectSet(req);
+  // Empty subjectCodes means no restriction (e.g. email-based mentor login).
+  if (allow.size === 0) return subs;
+  return subs.filter((sub) => allow.has(trimStr(sub?.code)));
+}
+
+async function getUploadWithAccess(req, uploadId) {
+  const doc = await Upload.findOne({ uploadId })
+    .select("+fileBuffer fileMimeType originalFileName fileSizeBytes facultyId")
+    .lean();
+  if (!doc) return { error: { status: 404, message: "Upload not found." } };
+
+  const role = req.user?.role;
+  if (role === "faculty" && doc.facultyId !== req.user?.userId) {
+    return { error: { status: 403, message: "You do not have access to this upload." } };
+  }
+  if (role !== "faculty" && role !== "admin") {
+    return { error: { status: 403, message: "You do not have access to this upload." } };
+  }
+  return { doc };
+}
+
+/**
+ * GET /api/upload/:uploadId/records — faculty owner only.
+ */
+export async function getUploadRecords(req, res, next) {
+  try {
+    const raw = req.params.uploadId;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "uploadId is required.",
+      });
+    }
+
+    const uploadId = raw.trim();
+    const { error } = await getUploadWithAccess(req, uploadId);
+    if (error) {
+      return res.status(error.status).json({
+        error: error.status === 404 ? "Not Found" : "Forbidden",
+        message: error.message,
+      });
+    }
+
+    const students = await Student.find({ uploadId }).lean();
+    const rows = [];
+
+    for (const s of students) {
+      const subs = filterSubjectsByRole(req, s.subjects);
+      if (!Array.isArray(subs)) continue;
+      for (const sub of subs) {
+        const pct = subjectTotalPercent(sub);
+        rows.push({
+          name: s.name ?? "",
+          roll: formatIdentifier(s.prn ?? s.seatNo ?? ""),
+          semester: s.semester ?? null,
+          classLabel: s.classLabel ?? "",
+          subject: sub.name ?? sub.code ?? "",
+          subjectCode: sub.code ?? "",
+          ise1: sub.internal ?? null,
+          ise2: sub.ise2 ?? null,
+          mse: sub.mse ?? null,
+          ese: sub.external ?? null,
+          total: sub.total ?? null,
+          percentage: pct != null ? Math.round(pct * 10_000) / 10_000 : null,
+          grade: sub.grade ?? "",
+          passFail: sub.result ?? "",
+        });
+      }
+    }
+
+    return res.json({ uploadId, rowCount: rows.length, rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/upload/:uploadId/file
+ * - Faculty can download only their own upload.
+ * - Admin can download any upload.
+ */
+export async function downloadUploadFile(req, res, next) {
+  try {
+    const raw = req.params.uploadId;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "uploadId is required.",
+      });
+    }
+
+    const uploadId = raw.trim();
+    const { doc, error } = await getUploadWithAccess(req, uploadId);
+    if (error) {
+      return res.status(error.status).json({
+        error: error.status === 404 ? "Not Found" : "Forbidden",
+        message: error.message,
+      });
+    }
+
+    if (!doc.fileBuffer || !Buffer.isBuffer(doc.fileBuffer)) {
+      return res.status(404).json({
+        error: "Not Found",
+        message: "Original file is not available for this upload.",
+      });
+    }
+
+    const fallbackName = `${uploadId}.xlsx`;
+    const originalName = String(doc.originalFileName || fallbackName).replace(
+      /[^\w.\- ]/g,
+      "_"
+    );
+    const mime =
+      doc.fileMimeType ||
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Length", String(doc.fileSizeBytes || doc.fileBuffer.length));
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${originalName || fallbackName}"`
+    );
+    return res.send(doc.fileBuffer);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/upload/my-uploads
+ * Returns faculty-owned uploads ordered latest first.
+ */
+export async function getMyUploads(req, res, next) {
+  try {
+    const role = req.user?.role;
+    if (role !== "faculty") {
+      return res.status(403).json({
+        error: "Forbidden",
+        message: "Only faculty can list their uploads.",
+      });
+    }
+    const facultyId = req.user?.userId;
+    const uploads = await Upload.find({ facultyId })
+      .select("uploadId classLabel semester examMonth examYear branch rowCount createdAt originalFileName")
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.json({ uploads });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/upload/:uploadId/analytics
+ * Upload-scoped analytics for charts on upload page.
+ */
+export async function getUploadAnalytics(req, res, next) {
+  try {
+    const raw = req.params.uploadId;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "uploadId is required.",
+      });
+    }
+    const uploadId = raw.trim();
+    const { error } = await getUploadWithAccess(req, uploadId);
+    if (error) {
+      return res.status(error.status).json({
+        error: error.status === 404 ? "Not Found" : "Forbidden",
+        message: error.message,
+      });
+    }
+
+    const students = await Student.find({ uploadId }).lean();
+    const gradeDistribution = {};
+    const percentageRanges = Array.from({ length: 20 }, (_, i) => ({
+      percentage: bucketLabel(i),
+      count: 0,
+    }));
+    const passFailBySubject = new Map();
+
+    let scopedStudentCount = 0;
+    for (const s of students) {
+      const subs = filterSubjectsByRole(req, s.subjects);
+      if (!subs.length) continue;
+      scopedStudentCount += 1;
+      const idx = bucketIndexForPercentage(
+        s?.percentage != null && Number.isFinite(Number(s.percentage))
+          ? Number(s.percentage)
+          : null
+      );
+      if (idx != null) percentageRanges[idx].count += 1;
+
+      for (const sub of subs) {
+        const g = String(sub?.grade ?? "").trim().toUpperCase() || "(blank)";
+        gradeDistribution[g] = (gradeDistribution[g] ?? 0) + 1;
+
+        const code = String(sub?.code ?? "").trim();
+        const name = String(sub?.name ?? "").trim() || code || "Unknown";
+        const key = code || name;
+        if (!passFailBySubject.has(key)) {
+          passFailBySubject.set(key, {
+            subjectCode: code,
+            subjectName: name,
+            pass: 0,
+            fail: 0,
+          });
+        }
+        const row = passFailBySubject.get(key);
+        const outcome = classifyOutcome(sub?.result);
+        if (outcome === "pass") row.pass += 1;
+        else if (outcome === "fail") row.fail += 1;
+      }
+    }
+
+    return res.json({
+      uploadId,
+      totalStudents: scopedStudentCount,
+      gradeDistribution,
+      percentageRanges,
+      passFailBySubject: [...passFailBySubject.values()],
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * DELETE /api/upload/:uploadId
+ * Faculty can delete only own upload data; admin can delete any upload.
+ */
+export async function deleteUpload(req, res, next) {
+  try {
+    const raw = req.params.uploadId;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "uploadId is required.",
+      });
+    }
+    const uploadId = raw.trim();
+    const { error } = await getUploadWithAccess(req, uploadId);
+    if (error) {
+      return res.status(error.status).json({
+        error: error.status === 404 ? "Not Found" : "Forbidden",
+        message: error.message,
+      });
+    }
+    await Promise.all([Upload.deleteOne({ uploadId }), Student.deleteMany({ uploadId })]);
+    return res.json({ ok: true, uploadId });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==================== FILE: server\src\controllers\analyticsController.js ====================
+
+import { Student, Upload } from "../models/index.js";
+import { Settings } from "../models/Settings.js";
+import {
+  computeGradeBands,
+  subjectEsePercent,
+  subjectIsePercent,
+  subjectMsePercent,
+  subjectTotalPercent,
+} from "../utils/gradeBandAnalysis.js";
+
+function parseSemester(q) {
+  const raw = q?.semester;
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function trimQuery(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+function normalizeSubjectCode(value) {
+  const raw = trimQuery(value);
+  if (!raw) return "";
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  const firstToken = firstLine.split(/\s+/)[0].trim();
+  return firstToken.toUpperCase();
+}
+
+function normalizeText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function subjectCodeSetFromUser(user) {
+  const codes = Array.isArray(user?.subjectCodes) ? user.subjectCodes : [];
+  return new Set(codes.map((c) => normalizeSubjectCode(c)).filter(Boolean));
+}
+
+/**
+ * Builds Mongo filter from query + faculty scope. Throws { statusCode: 403 } when faculty
+ * requests a class they are not assigned to.
+ * @param {import('express').Request} req
+ * @returns {Record<string, unknown>}
+ */
+async function buildScopedStudentFilter(req) {
+  const classLabel = trimQuery(req.query.classLabel);
+  const facultyIdQuery = trimQuery(req.query.facultyId);
+  const semester = parseSemester(req.query);
+
+  /** @type {Record<string, unknown>} */
+  const filter = {};
+
+  if (semester !== undefined) {
+    filter.semester = semester;
+  }
+
+  const user = req.user;
+  const role = user?.role;
+  const assigned = Array.isArray(user?.assignedClasses)
+    ? user.assignedClasses.map((c) => String(c).trim()).filter(Boolean)
+    : [];
+  const facultyId = trimQuery(user?.userId);
+
+  async function applyOwnUploadScope(targetFilter) {
+    const ownUploads = facultyId
+      ? await Upload.find({ facultyId }).select("uploadId").lean().exec()
+      : [];
+    const uploadIds = ownUploads
+      .map((u) => trimQuery(u?.uploadId))
+      .filter(Boolean);
+    if (uploadIds.length === 0) {
+      targetFilter.uploadId = { $in: [] };
+    } else {
+      targetFilter.uploadId = { $in: uploadIds };
+    }
+  }
+
+  if (role === "faculty") {
+    if (assigned.length === 0) {
+      await applyOwnUploadScope(filter);
+      if (classLabel) {
+        filter.classLabel = classLabel;
+      }
+      return filter;
+    }
+    if (classLabel) {
+      if (!assigned.includes(classLabel)) {
+        const err = new Error("You are not assigned to this class.");
+        err.statusCode = 403;
+        throw err;
+      }
+      filter.classLabel = classLabel;
+    } else {
+      const assignedCount = await Student.countDocuments({ classLabel: { $in: assigned } });
+      if (assignedCount > 0) {
+        filter.classLabel = { $in: assigned };
+      } else {
+        // Assigned class labels may become stale; fall back to this faculty's own uploads.
+        await applyOwnUploadScope(filter);
+      }
+    }
+    return filter;
+  }
+
+  // Admin optional scope: view analytics for one faculty's uploaded data.
+  if (role === "admin" && facultyIdQuery) {
+    const uploads = await Upload.find({ facultyId: facultyIdQuery }).select("uploadId").lean().exec();
+    const uploadIds = uploads.map((u) => trimQuery(u?.uploadId)).filter(Boolean);
+    filter.uploadId = uploadIds.length ? { $in: uploadIds } : { $in: [] };
+  }
+
+  if (classLabel) {
+    filter.classLabel = classLabel;
+  }
+
+  return filter;
+}
+
+async function loadScopedStudents(req) {
+  const filter = await buildScopedStudentFilter(req);
+  const students = await Student.find(filter).lean().exec();
+  if (req.user?.role !== "faculty") return students;
+
+  const allowed = subjectCodeSetFromUser(req.user);
+  // Empty subjectCodes means no restriction (e.g. email-based mentor login).
+  if (allowed.size === 0) return students;
+
+  const scoped = [];
+  for (const s of students) {
+    const subs = Array.isArray(s.subjects) ? s.subjects : [];
+    const filteredSubs = subs.filter((sub) => allowed.has(normalizeSubjectCode(sub?.code)));
+    if (!filteredSubs.length) continue;
+    scoped.push({ ...s, subjects: filteredSubs });
+  }
+  return scoped;
+}
+
+function normalizeGradeSymbol(g) {
+  if (g === undefined || g === null) return "";
+  return String(g).trim().toUpperCase();
+}
+
+function classifyOutcome(resultRaw) {
+  const s = String(resultRaw ?? "").trim();
+  if (!s) return "unknown";
+  if (/fail|f\.?\s*t\.?|withheld|absent|disc(?:ontinued)?/iu.test(s)) return "fail";
+  if (/pass|successful|complete|first\s*class|dist(?:inction)?|sat|cleared/iu.test(s)) {
+    return "pass";
+  }
+  return "unknown";
+}
+
+function average(nums) {
+  const vals = nums.filter((n) => Number.isFinite(n));
+  if (vals.length === 0) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function bucketLabel(index) {
+  if (index < 0 || index > 19) return "unknown";
+  if (index === 19) return "95-100";
+  const lo = index * 5;
+  const hi = lo + 5;
+  return `${lo}-${hi}`;
+}
+
+function bucketIndexForPercentage(pct) {
+  if (pct == null || !Number.isFinite(pct)) return null;
+  const clamped = Math.max(0, Math.min(100, pct));
+  return Math.min(19, Math.floor(clamped / 5));
+}
+
+function websiteRouteContextForRole(role) {
+  if (role === "admin") {
+    return [
+      { to: "/admin/dashboard", label: "Dashboard", purpose: "Overview, updates, O-grade pie chart" },
+      { to: "/admin/analysis-of-students", label: "Grade Band", purpose: "Faculty-wise grade charts" },
+      { to: "/admin/analytics", label: "Analytics", purpose: "Bell curve analysis" },
+      { to: "/admin/faculty-access", label: "Faculty Access", purpose: "Add faculty and allocate subjects" },
+    ];
+  }
+  return [
+    { to: "/faculty/dashboard", label: "Dashboard", purpose: "Overview and updates" },
+    { to: "/faculty/upload", label: "Upload", purpose: "Upload workbook/result file" },
+    { to: "/faculty/analytics", label: "Analytics", purpose: "Bell curve and advanced analysis" },
+    { to: "/faculty/grade-bands", label: "Grade Bands", purpose: "Grade distribution graphs" },
+    { to: "/faculty/profile", label: "Profile", purpose: "Update email/contact/password" },
+  ];
+}
+
+function normalizeLinks(rawLinks, role) {
+  const allowed = websiteRouteContextForRole(role);
+  const allowMap = new Map(allowed.map((l) => [l.to, l]));
+  if (!Array.isArray(rawLinks)) return [];
+  const out = [];
+  for (const row of rawLinks) {
+    const to = trimQuery(row?.to);
+    if (!allowMap.has(to)) continue;
+    const safe = allowMap.get(to);
+    out.push({
+      to,
+      label: trimQuery(row?.label) || safe.label,
+    });
+  }
+  return out.slice(0, 4);
+}
+
+function looksLikeSubjectSummaryRequest(message) {
+  const m = normalizeText(message);
+  if (!m) return false;
+  const asksSummary = /\b(summary|summarize|overview|report|analysis)\b/.test(m);
+  const mentionsGrade = /\b(grade|grades|grading|performance|result)\b/.test(m);
+  const mentionsSubject = /\b(subject|course)\b/.test(m);
+  return asksSummary && (mentionsGrade || mentionsSubject);
+}
+
+function pickRequestedSubject(message, students) {
+  const m = normalizeText(message);
+  const subjectMap = new Map();
+  for (const s of students) {
+    for (const sub of s.subjects || []) {
+      const code = trimQuery(sub?.code);
+      const name = trimQuery(sub?.name);
+      const key = code || name;
+      if (!key) continue;
+      subjectMap.set(key, { code, name });
+    }
+  }
+
+  let best = null;
+  let bestScore = 0;
+  for (const cand of subjectMap.values()) {
+    const codeNorm = normalizeText(cand.code);
+    const nameNorm = normalizeText(cand.name);
+    let score = 0;
+    if (codeNorm && m.includes(codeNorm)) score += 3;
+    if (nameNorm && m.includes(nameNorm)) score += 4;
+    if (!score && nameNorm) {
+      const nameTokens = nameNorm.split(" ").filter((t) => t.length > 2);
+      const hit = nameTokens.filter((t) => m.includes(t)).length;
+      if (hit >= 2) score += hit;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = cand;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
+async function buildSubjectGradeSummary(req, message) {
+  if (!looksLikeSubjectSummaryRequest(message)) return null;
+  const students = await loadScopedStudents(req);
+  if (!students.length) {
+    return {
+      answer: "I could not find uploaded student records in your current access scope.",
+      links:
+        req.user?.role === "admin"
+          ? [{ to: "/admin/analysis-of-students", label: "Open Grade Band" }]
+          : [{ to: "/faculty/upload", label: "Go to Upload" }],
+    };
+  }
+
+  const subjectPick = pickRequestedSubject(message, students);
+  if (!subjectPick) {
+    return {
+      answer:
+        "I can summarize subject grades if you mention a subject code or name, e.g. 'summarize my subject grade for BSC12EC05'.",
+      links:
+        req.user?.role === "admin"
+          ? [{ to: "/admin/analysis-of-students", label: "Open Grade Band" }]
+          : [{ to: "/faculty/grade-bands", label: "Open Grade Bands" }],
+    };
+  }
+
+  const grades = new Map();
+  let total = 0;
+  let pass = 0;
+  let fail = 0;
+  let pctSum = 0;
+  let pctCount = 0;
+
+  const targetCode = normalizeSubjectCode(subjectPick.code);
+  const targetName = normalizeText(subjectPick.name);
+
+  for (const s of students) {
+    for (const sub of s.subjects || []) {
+      const codeNorm = normalizeSubjectCode(sub?.code);
+      const nameNorm = normalizeText(sub?.name);
+      const codeMatch = targetCode && codeNorm === targetCode;
+      const nameMatch = targetName && nameNorm === targetName;
+      if (!codeMatch && !nameMatch) continue;
+
+      total += 1;
+      const g = normalizeGradeSymbol(sub?.grade) || "(blank)";
+      grades.set(g, (grades.get(g) || 0) + 1);
+      const outcome = classifyOutcome(sub?.result);
+      if (outcome === "pass") pass += 1;
+      else if (outcome === "fail") fail += 1;
+      const pct = subjectTotalPercent(sub);
+      if (pct != null && Number.isFinite(Number(pct))) {
+        pctSum += Number(pct);
+        pctCount += 1;
+      }
+    }
+  }
+
+  if (total === 0) {
+    return {
+      answer: `I found no grade rows for ${subjectPick.code || subjectPick.name} in your current scope.`,
+      links:
+        req.user?.role === "admin"
+          ? [{ to: "/admin/analysis-of-students", label: "Open Grade Band" }]
+          : [{ to: "/faculty/grade-bands", label: "Open Grade Bands" }],
+    };
+  }
+
+  const topGrades = [...grades.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([g, c]) => `${g}:${c}`)
+    .join(", ");
+  const avgPct = pctCount ? (pctSum / pctCount).toFixed(2) : "N/A";
+  const passRate = total ? ((pass / total) * 100).toFixed(1) : "0.0";
+  const subjectLabel = subjectPick.code && subjectPick.name
+    ? `${subjectPick.code} (${subjectPick.name})`
+    : subjectPick.code || subjectPick.name || "Selected subject";
+
+  return {
+    answer:
+      `Grade summary for ${subjectLabel}: total rows ${total}, pass ${pass}, fail ${fail}, pass rate ${passRate}%, average percentage ${avgPct}. ` +
+      `Top grade counts: ${topGrades || "no grade symbols available"}.`,
+    links:
+      req.user?.role === "admin"
+        ? [{ to: "/admin/analysis-of-students", label: "Open Grade Band" }]
+        : [{ to: "/faculty/grade-bands", label: "Open Grade Bands" }],
+  };
+}
+
+/**
+ * GET /api/analytics/percentage-ranges?classLabel=&semester=
+ * Distribution of overall student percentages in 5% buckets.
+ */
+export async function getOverallPercentageRanges(req, res, next) {
+  try {
+    const students = await loadScopedStudents(req);
+    const buckets = Array.from({ length: 20 }, (_, i) => ({
+      percentage: bucketLabel(i),
+      count: 0,
+    }));
+
+    for (const s of students) {
+      const pct =
+        s?.percentage != null && Number.isFinite(Number(s.percentage))
+          ? Number(s.percentage)
+          : null;
+      const idx = bucketIndexForPercentage(pct);
+      if (idx === null) continue;
+      buckets[idx].count += 1;
+    }
+
+    return res.json(buckets);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/analytics/dashboard?classLabel=&semester=
+ */
+export async function getDashboard(req, res, next) {
+  try {
+    const students = await loadScopedStudents(req);
+
+    const totalStudents = students.length;
+
+    const sgpaVals = students
+      .map((s) => s.sgpa)
+      .filter((n) => n !== undefined && n !== null && Number.isFinite(Number(n)))
+      .map(Number);
+    const avgSgpa = sgpaVals.length ? sgpaVals.reduce((a, b) => a + b, 0) / sgpaVals.length : null;
+
+    let passCount = 0;
+    let failCount = 0;
+    for (const s of students) {
+      const o = classifyOutcome(s.result);
+      if (o === "pass") passCount += 1;
+      else if (o === "fail") failCount += 1;
+    }
+
+    const passRate =
+      totalStudents > 0 ? Math.round((passCount / totalStudents) * 1e6) / 1e6 : 0;
+
+    /** @type {Record<string, number>} */
+    const gradeDistribution = {};
+    for (const s of students) {
+      const subs = s.subjects;
+      if (!Array.isArray(subs)) continue;
+      for (const sub of subs) {
+        const sym = normalizeGradeSymbol(sub.grade);
+        const key = sym || "(blank)";
+        gradeDistribution[key] = (gradeDistribution[key] ?? 0) + 1;
+      }
+    }
+
+    /** @type {Map<string, { name: string, totals: number[] }>} */
+    const bySubject = new Map();
+    for (const s of students) {
+      const subs = s.subjects;
+      if (!Array.isArray(subs)) continue;
+      for (const sub of subs) {
+        const code = trimQuery(sub.code);
+        const name =
+          sub.name != null && String(sub.name).trim() !== ""
+            ? String(sub.name).trim()
+            : code || "Unknown";
+        const pct = subjectTotalPercent(sub);
+        if (pct == null || !Number.isFinite(pct)) continue;
+        const key = code || "__NO_CODE__";
+        let row = bySubject.get(key);
+        if (!row) {
+          row = { name, totals: [] };
+          bySubject.set(key, row);
+        } else if (row.name === "Unknown" && name !== "Unknown") {
+          row.name = name;
+        }
+        row.totals.push(pct);
+      }
+    }
+
+    const subjectAvgPercentage = Array.from(bySubject.entries())
+      .map(([subjectCode, { name, totals }]) => ({
+        subjectCode: subjectCode === "__NO_CODE__" ? "" : subjectCode,
+        subjectName: name,
+        avgPercentage:
+          totals.length > 0
+            ? Math.round((totals.reduce((a, b) => a + b, 0) / totals.length) * 1e4) / 1e4
+            : null,
+      }))
+      .sort((a, b) =>
+        a.subjectCode.localeCompare(b.subjectCode, undefined, { sensitivity: "base" })
+      );
+
+    return res.json({
+      totalStudents,
+      avgSgpa,
+      passCount,
+      failCount,
+      passRate,
+      gradeDistribution,
+      subjectAvgPercentage,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/analytics/grade-bands?classLabel=&subjectCode=
+ */
+export async function getGradeBands(req, res, next) {
+  try {
+    const students = await loadScopedStudents(req);
+    const data = computeGradeBands(students);
+    const codeFilter = trimQuery(req.query.subjectCode);
+    if (!codeFilter) {
+      return res.json(data);
+    }
+    const filtered = data.filter((d) => d.subjectCode === codeFilter);
+    return res.json(filtered);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/analytics/bell-curve?classLabel=&subjectCode=&exam=ise|mse|ese|total
+ */
+export async function getBellCurve(req, res, next) {
+  try {
+    const subjectCode = trimQuery(req.query.subjectCode);
+    if (!subjectCode) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "Query parameter subjectCode is required.",
+      });
+    }
+
+    const examRaw = trimQuery(req.query.exam).toLowerCase();
+    const exam = examRaw || "total";
+    if (!["ise", "mse", "ese", "total"].includes(exam)) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: 'Query parameter exam must be one of: ise, mse, ese, total.',
+      });
+    }
+
+    const students = await loadScopedStudents(req);
+
+    const pickPct =
+      exam === "ise"
+        ? subjectIsePercent
+        : exam === "mse"
+          ? subjectMsePercent
+        : exam === "ese"
+          ? subjectEsePercent
+          : subjectTotalPercent;
+
+    const buckets = Array.from({ length: 20 }, (_, i) => ({
+      percentage: bucketLabel(i),
+      count: 0,
+    }));
+
+    for (const s of students) {
+      const subs = s.subjects;
+      if (!Array.isArray(subs)) continue;
+      for (const sub of subs) {
+        if (trimQuery(sub.code) !== subjectCode) continue;
+        const pct = pickPct(sub);
+        if (pct == null || !Number.isFinite(pct)) continue;
+        const idx = bucketIndexForPercentage(pct);
+        if (idx === null) continue;
+        buckets[idx].count += 1;
+      }
+    }
+
+    return res.json(buckets);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/analytics/subject-avg?classLabel=
+ */
+export async function getSubjectAvg(req, res, next) {
+  try {
+    const students = await loadScopedStudents(req);
+
+    /** @type {Map<string, { name: string, internals: number[], externals: number[], totals: number[] }>} */
+    const acc = new Map();
+
+    for (const s of students) {
+      const subs = s.subjects;
+      if (!Array.isArray(subs)) continue;
+      for (const sub of subs) {
+        const code = trimQuery(sub.code);
+        const name =
+          sub.name != null && String(sub.name).trim() !== ""
+            ? String(sub.name).trim()
+            : code || "Unknown";
+        const key = code || "__NO_CODE__";
+        let row = acc.get(key);
+        if (!row) {
+          row = { name, internals: [], externals: [], totals: [] };
+          acc.set(key, row);
+        } else if (row.name === "Unknown" && name !== "Unknown") {
+          row.name = name;
+        }
+
+        const i = sub.internal;
+        const e = sub.external;
+        const t = sub.total;
+        if (i !== undefined && i !== null && i !== "" && Number.isFinite(Number(i))) {
+          row.internals.push(Number(i));
+        }
+        if (e !== undefined && e !== null && e !== "" && Number.isFinite(Number(e))) {
+          row.externals.push(Number(e));
+        }
+        if (t !== undefined && t !== null && t !== "" && Number.isFinite(Number(t))) {
+          row.totals.push(Number(t));
+        }
+      }
+    }
+
+    const out = Array.from(acc.entries())
+      .map(([subjectCode, { name, internals, externals, totals }]) => ({
+        subjectCode: subjectCode === "__NO_CODE__" ? "" : subjectCode,
+        subjectName: name,
+        avgInternal: average(internals),
+        avgExternal: average(externals),
+        avgTotal: average(totals),
+      }))
+      .sort((a, b) =>
+        a.subjectCode.localeCompare(b.subjectCode, undefined, { sensitivity: "base" })
+      );
+
+    return res.json(out);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/analytics/exam-progression?classLabel=
+ * Ordered list suitable for charts: per-subject average ISE/MSE/ESE (percent for ISE/MSE/ESE).
+ */
+export async function getExamProgression(req, res, next) {
+  try {
+    const students = await loadScopedStudents(req);
+
+    /** @type {Map<string, { name: string, ise: number[], mse: number[], ese: number[] }>} */
+    const acc = new Map();
+
+    for (const s of students) {
+      const subs = s.subjects;
+      if (!Array.isArray(subs)) continue;
+      for (const sub of subs) {
+        const code = trimQuery(sub.code);
+        const name =
+          sub.name != null && String(sub.name).trim() !== ""
+            ? String(sub.name).trim()
+            : code || "Unknown";
+        const key = code || "__NO_CODE__";
+        let row = acc.get(key);
+        if (!row) {
+          row = { name, ise: [], mse: [], ese: [] };
+          acc.set(key, row);
+        } else if (row.name === "Unknown" && name !== "Unknown") {
+          row.name = name;
+        }
+
+        const ip = subjectIsePercent(sub);
+        const mp = subjectMsePercent(sub);
+        const ep = subjectEsePercent(sub);
+        if (ip != null && Number.isFinite(ip)) row.ise.push(ip);
+        if (mp != null && Number.isFinite(mp)) row.mse.push(mp);
+        if (ep != null && Number.isFinite(ep)) row.ese.push(ep);
+      }
+    }
+
+    const series = Array.from(acc.entries())
+      .map(([subjectCode, { name, ise, mse, ese }]) => ({
+        subjectCode: subjectCode === "__NO_CODE__" ? "" : subjectCode,
+        subjectName: name,
+        avgIse: average(ise),
+        avgMse: mse.length ? average(mse) : null,
+        avgEse: average(ese),
+      }))
+      .sort((a, b) =>
+        a.subjectCode.localeCompare(b.subjectCode, undefined, { sensitivity: "base" })
+      );
+
+    return res.json(series);
+  } catch (err) {
+    next(err);
+  }
+}
+/**
+ * GET /api/analytics/upload-records?uploadId=
+ * Used by Upload Page to show parsed table
+ */
+export async function getUploadRecords(req, res) {
+  try {
+    const { uploadId } = req.query;
+
+    if (!uploadId) {
+      return res.status(400).json({ message: "uploadId required" });
+    }
+
+    const students = await Student.find({ uploadId });
+
+    return res.json(students);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Error fetching records" });
+  }
+}
+
+/**
+ * GET /api/analytics/exam-updates
+ * Published admin exam updates (read-only for authenticated users).
+ */
+export async function getExamUpdates(req, res, next) {
+  try {
+    const settings = await Settings.findById("app").lean();
+    const updates = Array.isArray(settings?.examUpdates)
+      ? settings.examUpdates
+          .filter((u) => u?.published && String(u?.message || "").trim())
+          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      : [];
+    return res.json({ updates });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/analytics/help-chat
+ * Body: { message: string, history?: { role: "user"|"assistant", text: string }[] }
+ */
+export async function postHelpChat(req, res, next) {
+  try {
+    const message = trimQuery(req.body?.message);
+    const history = Array.isArray(req.body?.history) ? req.body.history : [];
+    if (!message) {
+      return res.status(400).json({ message: "message is required" });
+    }
+
+    const deterministicSummary = await buildSubjectGradeSummary(req, message);
+    if (deterministicSummary) {
+      return res.json(deterministicSummary);
+    }
+
+    const role = req.user?.role === "admin" ? "admin" : "faculty";
+    const routes = websiteRouteContextForRole(role);
+    const ollamaBase = trimQuery(process.env.OLLAMA_BASE_URL) || "http://127.0.0.1:11434";
+    const preferredModel = trimQuery(process.env.OLLAMA_MODEL);
+    const modelCandidates = preferredModel
+      ? [preferredModel]
+      : ["llama3.1:latest", "llama3.1:8b", "llama3:latest"];
+
+    const systemPrompt = [
+      "You are an in-app assistant for GradeX, a college grading and analytics web app.",
+      "Answer only with guidance related to this website's features and workflows.",
+      `Current user role: ${role}. Never suggest routes outside this role.`,
+      "If asked non-website things, politely redirect to website usage help.",
+      "Keep response concise and actionable.",
+      "Return STRICT JSON only with shape:",
+      '{"answer":"string","links":[{"to":"string","label":"string"}]}',
+      "Use only these allowed links:",
+      JSON.stringify(routes),
+    ].join("\n");
+
+    const chatMessages = [
+      { role: "system", content: systemPrompt },
+      ...history
+        .slice(-8)
+        .map((h) => ({
+          role: h?.role === "assistant" ? "assistant" : "user",
+          content: trimQuery(h?.text),
+        }))
+        .filter((h) => h.content),
+      { role: "user", content: message },
+    ];
+
+    let modelText = "";
+    let lastError = null;
+    for (const modelName of modelCandidates) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const resp = await fetch(`${ollamaBase}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: modelName,
+            messages: chatMessages,
+            stream: false,
+            options: { temperature: 0.2 },
+          }),
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          lastError = new Error(`Ollama error ${resp.status}: ${text.slice(0, 200)}`);
+          continue;
+        }
+        const data = await resp.json();
+        modelText = trimQuery(data?.message?.content || data?.response || "");
+        if (modelText) break;
+      } catch (e) {
+        lastError = e;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    if (!modelText && lastError) throw lastError;
+
+    let parsed = null;
+    if (modelText) {
+      try {
+        parsed = JSON.parse(modelText);
+      } catch {
+        const m = modelText.match(/\{[\s\S]*\}/);
+        if (m) {
+          try {
+            parsed = JSON.parse(m[0]);
+          } catch {
+            parsed = null;
+          }
+        }
+      }
+    }
+
+    const answer =
+      trimQuery(parsed?.answer) ||
+      "I can help with navigation and usage of dashboard, upload, analytics, grade bands, and profile/faculty access.";
+    const links = normalizeLinks(parsed?.links, role);
+    return res.json({ answer, links });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      return res.status(504).json({
+        message:
+          "Local Ollama did not respond in time. Ensure it is running (e.g. ollama serve).",
+      });
+    }
+    next(err);
+  }
+}
+
+
+
+==================== FILE: server\src\controllers\subjectsController.js ====================
+
+import { Subject } from "../models/Subject.js";
+import { Settings } from "../models/Settings.js";
+
+function toSemesterNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function getSubjectSemesters(_req, res, next) {
+  try {
+    let semesters = await Subject.distinct("semester");
+    let normalized = semesters
+      .map((s) => Number(s))
+      .filter((s) => Number.isFinite(s))
+      .sort((a, b) => a - b);
+
+    // Backfill subjects collection from existing settings catalog if needed.
+    if (normalized.length === 0) {
+      const settings = await Settings.findById("app").lean();
+      const catalog = Array.isArray(settings?.semesterSubjectCatalog)
+        ? settings.semesterSubjectCatalog
+        : [];
+      const ops = [];
+      for (const semRow of catalog) {
+        const semester = Number(semRow?.semester);
+        const subjects = Array.isArray(semRow?.subjects) ? semRow.subjects : [];
+        for (const sub of subjects) {
+          const subject_code = String(sub?.code || "")
+            .trim()
+            .toUpperCase();
+          const subject_name = String(sub?.name || "").trim();
+          if (!Number.isFinite(semester) || !subject_code || !subject_name) continue;
+          ops.push({
+            updateOne: {
+              filter: { semester, subject_code },
+              update: { $set: { semester, subject_code, subject_name } },
+              upsert: true,
+            },
+          });
+        }
+      }
+      if (ops.length) {
+        await Subject.bulkWrite(ops, { ordered: false });
+      }
+      semesters = await Subject.distinct("semester");
+      normalized = semesters
+        .map((s) => Number(s))
+        .filter((s) => Number.isFinite(s))
+        .sort((a, b) => a - b);
+    }
+
+    return res.json(normalized);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getSubjectsBySemester(req, res, next) {
+  try {
+    const semester = toSemesterNumber(req.query?.semester);
+    if (semester == null) {
+      return res.status(400).json({
+        error: "Bad Request",
+        message: "semester query param is required.",
+      });
+    }
+
+    const subjects = await Subject.find({ semester })
+      .select("subject_code subject_name -_id")
+      .sort({ subject_code: 1 })
+      .lean();
+    return res.json(subjects);
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+==================== FILE: server\src\routes\uploadRoutes.js ====================
+
+import { Router } from "express";
+import multer from "multer";
+import { requireFaculty, verifyToken } from "../middleware/auth.js";
+import {
+  deleteUpload,
+  downloadUploadFile,
+  getMyUploads,
+  getUploadAnalytics,
+  getUploadRecords,
+} from "../controllers/uploadRecordsController.js";
+import {
+  downloadUploadTemplate,
+  uploadSpreadsheet,
+} from "../controllers/uploadController.js";
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: 1,
+    // MongoDB document limit is 16MB; keep room for metadata + parsed data.
+    fileSize: 14 * 1024 * 1024,
+  },
+  fileFilter(_req, file, cb) {
+    const name = (file.originalname || "").toLowerCase();
+    if (!name.endsWith(".xlsx") && !name.endsWith(".xls")) {
+      const err = new Error("Only Excel files (.xlsx or .xls) are allowed.");
+      err.statusCode = 400;
+      return cb(err);
+    }
+    cb(null, true);
+  },
+});
+
+const router = Router();
+
+router.get("/my-uploads", verifyToken, requireFaculty, getMyUploads);
+router.get(
+  "/:uploadId/records",
+  verifyToken,
+  getUploadRecords
+);
+router.get("/:uploadId/analytics", verifyToken, getUploadAnalytics);
+router.get("/template", verifyToken, requireFaculty, downloadUploadTemplate);
+
+router.get("/:uploadId/file", verifyToken, downloadUploadFile);
+router.delete("/:uploadId", verifyToken, deleteUpload);
+
+router.post(
+  "/",
+  verifyToken,
+  requireFaculty,
+  upload.single("file"),
+  uploadSpreadsheet
+);
+
+export default router;
+
+
+==================== FILE: server\src\data\seEcsFaculty.js ====================
+
+export const SE_ECS_FACULTY = [
+  {
+    name: "Dr. D.V. Bhoir",
+    contact: "9869433765",
+    email: "bhoir@frcrce.ac.in",
+  },
+  {
+    name: "Prof. Binsy Joseph",
+    contact: "9833503363",
+    email: "binsy_joseph@fragnel.edu.in",
+  },
+  {
+    name: "Dr. Swapnali Makdey",
+    contact: "9769091874",
+    email: "swapnali@fragnel.edu.in",
+  },
+  {
+    name: "Prof. Vaibhav Godbole",
+    contact: "9869331965",
+    email: "godbole@fragnel.edu.in",
+  },
+  {
+    name: "Prof. Archana Lopes",
+    contact: "9890599604",
+    email: "archana_lopes@fragnel.edu.in",
+  },
+  {
+    name: "Prof. Jayen Modi",
+    contact: "9930314033",
+    email: "jayen.modi@fragnel.edu.in",
+  },
+  {
+    name: "Prof. Prajkta Bhangale",
+    contact: "9833720466",
+    email: "prajakta.bhongale@frcrce.ac.in",
+  },
+  {
+    name: "Dr. Sailakshmi Paravathi",
+    contact: "8976469083",
+    email: null,
+  },
+  {
+    name: "Dr. Inderkumar Kochar",
+    contact: "9987609575",
+    email: null,
+  },
+];
+
+
+==================== FILE: server\src\data\semesterSubjectCatalog.js ====================
+
+export const SEMESTER_SUBJECT_CATALOG = [
+  {
+    semester: 3,
+    subjects: [
+      { code: "BSC12EC05", name: "Signals and Systems" },
+      { code: "PCC12EC05", name: "Electronic Devices" },
+      { code: "PCC12EC06", name: "Computer Organisation and Architecture" },
+      { code: "PCC12EC07", name: "Object Oriented Programming with JAVA Lab" },
+      { code: "MDM01", name: "Law for Engineers" },
+      { code: "OEEC11", name: "Database Management Systems" },
+      { code: "OEEC21", name: "Software Engineering for Web Applications" },
+      { code: "EEM12EC01", name: "Financial Planning, Taxation and Investment" },
+      { code: "VEC12EC01", name: "Human Values and Professional Ethics" },
+      { code: "CEP12EC01", name: "Community Engagement Project" },
+      { code: "LLCXX", name: "One Course from CC" },
+      { code: "PCC11EC03", name: "Digital Electronics" },
+      { code: "PCC11EC01", name: "Innovation and Design Thinking" },
+    ],
+  },
+  {
+    semester: 5,
+    subjects: [
+      { code: "ECC501", name: "Communication Engineering" },
+      { code: "ECC502", name: "Computer Organization and Architecture" },
+      { code: "ECC503", name: "Software Engineering" },
+      { code: "ECC504", name: "Web Technologies" },
+      { code: "ECCDO501", name: "Department Optional (Course - I)" },
+      { code: "ECL501", name: "Communication Engineering Lab" },
+      { code: "ECL502", name: "Software Engineering and Web Technologies Lab" },
+      { code: "ECL503", name: "Department Optional (Course - I) Lab" },
+      { code: "ECL504", name: "Professional Communication and Ethics-II" },
+      { code: "ECM501", name: "Mini project - 2A" },
+    ],
+  },
+];
+
+
+==================== FILE: server\scripts\seed-faculty-vaibhav.mjs ====================
+
+/**
+ * One-time upsert for sample faculty:
+ *   userId: faculty-prof
+ *   display: Vaibhav Godbole
+ *   email: godbolefragnel@edu.in
+ *
+ * Usage (from server/):
+ *   Set SEED_FACULTY_PASSWORD in .env (min 6 characters), then:
+ *   node scripts/seed-faculty-vaibhav.mjs
+ */
+import "dotenv/config";
+import bcrypt from "bcryptjs";
+import mongoose from "mongoose";
+import { User } from "../src/models/User.js";
+
+const USER_ID = "faculty-prof";
+const DISPLAY = "Vaibhav Godbole";
+const EMAIL = "godbolefragnel@edu.in";
+
+const mongoUri = process.env.MONGO_URI;
+const plain = process.env.SEED_FACULTY_PASSWORD;
+
+if (!mongoUri) {
+  console.error("MONGO_URI is required in .env");
+  process.exit(1);
+}
+if (!plain || plain.length < 6) {
+  console.error("Set SEED_FACULTY_PASSWORD in .env (at least 6 characters).");
+  process.exit(1);
+}
+
+const passwordHash = await bcrypt.hash(plain, 10);
+
+await mongoose.connect(mongoUri);
+
+await User.findOneAndUpdate(
+  { userId: USER_ID },
+  {
+    $set: {
+      displayLabel: DISPLAY,
+      email: EMAIL,
+      role: "faculty",
+      passwordHash,
+      subjectCodes: [],
+      assignedClasses: [],
+    },
+  },
+  { upsert: true, new: true }
+);
+
+console.log(`Upserted faculty: ${USER_ID} (${DISPLAY}) <${EMAIL}>`);
+await mongoose.disconnect();
+process.exit(0);
+
+
+==================== FILE: server\scripts\seed-se-ecs-faculty.mjs ====================
+
+import "dotenv/config";
+import bcrypt from "bcryptjs";
+import mongoose from "mongoose";
+import { User } from "../src/models/User.js";
+import { SE_ECS_FACULTY } from "../src/data/seEcsFaculty.js";
+
+function toUserId(name) {
+  return (
+    "seecs-" +
+    String(name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 32)
+  );
+}
+
+const mongoUri = process.env.MONGO_URI;
+if (!mongoUri) {
+  console.error("MONGO_URI is required in .env");
+  process.exit(1);
+}
+
+const plain = process.env.SEED_FACULTY_PASSWORD;
+if (!plain || plain.length < 6) {
+  console.error("Set SEED_FACULTY_PASSWORD in .env (at least 6 characters).");
+  process.exit(1);
+}
+
+await mongoose.connect(mongoUri);
+const passwordHash = await bcrypt.hash(plain, 10);
+
+for (const row of SE_ECS_FACULTY) {
+  const email = row.email ? String(row.email).trim().toLowerCase() : "";
+  const displayLabel = row.name;
+  const contact = row.contact ? String(row.contact).trim() : "";
+  const userId = toUserId(displayLabel);
+
+  const query = email
+    ? { role: "faculty", $or: [{ email }, { userId }, { displayLabel }] }
+    : { role: "faculty", $or: [{ userId }, { displayLabel }] };
+
+  await User.findOneAndUpdate(
+    query,
+    {
+      $set: {
+        role: "faculty",
+        userId,
+        displayLabel,
+        email,
+        contact,
+        passwordHash,
+      },
+      $setOnInsert: {
+        subjectCodes: [],
+        assignedClasses: [],
+      },
+    },
+    { upsert: true, new: true }
+  );
+}
+
+console.log(`Seeded ${SE_ECS_FACULTY.length} SE-ECS faculty entries.`);
+await mongoose.disconnect();
+
+
+==================== FILE: client\src\pages\admin\FacultyAccessPage.jsx ====================
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  createFaculty,
+  deleteFaculty,
+  fetchAdminMeta,
+  fetchSemesterSubjectCatalog,
+  fetchSubjectSemesters,
+  fetchSubjectsBySemester,
+  listFaculty,
+  listSchoolClasses,
+  patchFacultySemesterSubjects,
+  downloadSemesterSubjectCatalogTemplate,
+  uploadSemesterSubjectCatalog,
+} from "../../api/adminApi.js";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
+import { toFacultySelectOption } from "../../utils/facultySelect.js";
+import "../../styles/facultyPages.css";
+import "../../styles/adminPages.css";
+
+export function FacultyAccessPage() {
+  const [faculty, setFaculty] = useState([]);
+  const [classes, setClasses] = useState([]);
+  const [meta, setMeta] = useState({ classes: [], subjectCodes: [] });
+  const [subjectSemesters, setSubjectSemesters] = useState([]);
+  const [semesterSubjects, setSemesterSubjects] = useState([]);
+  const [semesterCatalog, setSemesterCatalog] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const [newUserId, setNewUserId] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+
+  /** Faculty selected for subject + class allocation */
+  const [allocationUserId, setAllocationUserId] = useState("");
+  const [allocationSemester, setAllocationSemester] = useState(3);
+  const [allocationSubjects, setAllocationSubjects] = useState([]);
+  const [allocationSubjectQuery, setAllocationSubjectQuery] = useState("");
+  const [catalogFile, setCatalogFile] = useState(null);
+  const [catalogSemester, setCatalogSemester] = useState("1");
+  const [catalogUploading, setCatalogUploading] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState("");
+  const semesterOptions = useMemo(() => {
+    const fromApi = (Array.isArray(subjectSemesters) ? subjectSemesters : [])
+      .map((s) => Number(s))
+      .filter((s) => Number.isFinite(s));
+    const fallback = Array.from({ length: 8 }, (_, i) => i + 1);
+    const merged = [...new Set(fromApi.length ? fromApi : fallback)].sort((a, b) => a - b);
+    return merged.map((s) => ({ value: String(s), label: `Semester ${s}` }));
+  }, [subjectSemesters]);
+
+  const load = useCallback(async () => {
+    setErr("");
+    setLoading(true);
+    try {
+      const [fRes, cRes, mRes, semRes, catRes] = await Promise.allSettled([
+        listFaculty(),
+        listSchoolClasses(),
+        fetchAdminMeta(),
+        fetchSubjectSemesters(),
+        fetchSemesterSubjectCatalog(),
+      ]);
+
+      if (fRes.status === "fulfilled") {
+        setFaculty(Array.isArray(fRes.value) ? fRes.value : []);
+      }
+      if (cRes.status === "fulfilled") {
+        setClasses(Array.isArray(cRes.value) ? cRes.value : []);
+      }
+      if (mRes.status === "fulfilled") {
+        const m = mRes.value;
+        setMeta({
+          classes: Array.isArray(m?.classes) ? m.classes : [],
+          subjectCodes: Array.isArray(m?.subjectCodes) ? m.subjectCodes : [],
+        });
+      }
+      if (semRes.status === "fulfilled") {
+        const semesters = semRes.value;
+        setSubjectSemesters(
+          (Array.isArray(semesters) ? semesters : [])
+            .map((s) => Number(s))
+            .filter((s) => Number.isFinite(s))
+            .sort((a, b) => a - b)
+        );
+      }
+      if (catRes.status === "fulfilled") {
+        setSemesterCatalog(Array.isArray(catRes.value) ? catRes.value : []);
+      }
+
+      if (
+        fRes.status !== "fulfilled" &&
+        cRes.status !== "fulfilled" &&
+        mRes.status !== "fulfilled" &&
+        semRes.status !== "fulfilled" &&
+        catRes.status !== "fulfilled"
+      ) {
+        throw new Error("Failed to load admin data.");
+      }
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Failed to load.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    if (faculty.length && !allocationUserId) {
+      setAllocationUserId(faculty[0].userId);
+    }
+  }, [faculty, allocationUserId]);
+
+  useEffect(() => {
+    const u = faculty.find((x) => x.userId === allocationUserId);
+    const semRows = Array.isArray(u?.semesterSubjectAssignments)
+      ? u.semesterSubjectAssignments
+      : [];
+    const semMatch = semRows.find((r) => Number(r.semester) === Number(allocationSemester));
+    if (u) {
+      setAllocationSubjects([...(semMatch?.subjectCodes ?? [])]);
+    } else {
+      setAllocationSubjects([]);
+    }
+  }, [allocationUserId, allocationSemester, faculty]);
+
+  useEffect(() => {
+    if (!subjectSemesters.length) return;
+    const current = Number(allocationSemester);
+    const present = subjectSemesters.some((s) => Number(s) === current);
+    if (!present) {
+      setAllocationSemester(Number(subjectSemesters[0]));
+    }
+  }, [subjectSemesters, allocationSemester]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSubjectsBySemester(allocationSemester)
+      .then((rows) => {
+        if (cancelled) return;
+        const byApi = Array.isArray(rows) ? rows : [];
+        if (byApi.length > 0) {
+          setSemesterSubjects(byApi);
+          return;
+        }
+        const fromCatalog = (Array.isArray(semesterCatalog) ? semesterCatalog : []).find(
+          (s) => Number(s?.semester) === Number(allocationSemester)
+        );
+        const fallbackRows = (fromCatalog?.subjects ?? []).map((s) => ({
+          subject_code: String(s?.code || "").trim(),
+          subject_name: String(s?.name || "").trim(),
+        }));
+        setSemesterSubjects(fallbackRows);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const fromCatalog = (Array.isArray(semesterCatalog) ? semesterCatalog : []).find(
+          (s) => Number(s?.semester) === Number(allocationSemester)
+        );
+        const fallbackRows = (fromCatalog?.subjects ?? []).map((s) => ({
+          subject_code: String(s?.code || "").trim(),
+          subject_name: String(s?.name || "").trim(),
+        }));
+        setSemesterSubjects(fallbackRows);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [allocationSemester, semesterCatalog]);
+
+  const subjectOptions = useMemo(() => {
+    const mapped = (Array.isArray(semesterSubjects) ? semesterSubjects : []).map((s) => ({
+      code: String(s.subject_code || "").trim(),
+      name: String(s.subject_name || "").trim(),
+    }));
+    const strictMap = new Map();
+    for (const s of mapped) {
+      if (s.code) strictMap.set(s.code, s.name);
+    }
+    const namedSubjects = [...strictMap.entries()]
+      .map(([code, name]) => ({ code, name }))
+      .filter((s) => Boolean(s.code));
+
+    return namedSubjects.sort((a, b) => a.code.localeCompare(b.code));
+  }, [semesterSubjects]);
+
+  const filteredSubjectOptions = useMemo(() => {
+    const q = String(allocationSubjectQuery || "").trim().toLowerCase();
+    if (!q) return subjectOptions;
+    return subjectOptions.filter((s) => {
+      const code = String(s.code || "").toLowerCase();
+      const name = String(s.name || "").toLowerCase();
+      return code.includes(q) || name.includes(q);
+    });
+  }, [allocationSubjectQuery, subjectOptions]);
+
+  const selectedFaculty = useMemo(
+    () => faculty.find((u) => u.userId === allocationUserId) || null,
+    [faculty, allocationUserId]
+  );
+
+  const selectedFacultySemesterAssignments = useMemo(() => {
+    const rows = Array.isArray(selectedFaculty?.semesterSubjectAssignments)
+      ? selectedFaculty.semesterSubjectAssignments
+      : [];
+    return [...rows]
+      .map((row) => ({
+        semester: Number(row?.semester),
+        subjectCodes: Array.isArray(row?.subjectCodes)
+          ? row.subjectCodes.map((c) => String(c || "").trim()).filter(Boolean)
+          : [],
+      }))
+      .filter((row) => Number.isFinite(row.semester))
+      .sort((a, b) => a.semester - b.semester);
+  }, [selectedFaculty]);
+
+  function flash(message) {
+    setMsg(message);
+    setTimeout(() => setMsg(""), 3500);
+  }
+
+  function renderChips(items) {
+    const values = Array.isArray(items)
+      ? items.map((v) => String(v || "").trim()).filter(Boolean)
+      : [];
+    if (!values.length) return <span className="muted-chip">—</span>;
+    return (
+      <div className="inline-chip-list">
+        {values.map((value) => (
+          <span key={value} className="inline-chip">
+            {value}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  async function onAddTeacher(e) {
+    e.preventDefault();
+    setErr("");
+    try {
+      await createFaculty({
+        userId: newUserId.trim(),
+        displayLabel: newLabel.trim(),
+        email: newEmail.trim(),
+        password: newPassword,
+      });
+      setNewUserId("");
+      setNewLabel("");
+      setNewEmail("");
+      setNewPassword("");
+      flash("Teacher created.");
+      await load();
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Could not create teacher.");
+    }
+  }
+
+  async function onSaveFacultyAllocation(e) {
+    e.preventDefault();
+    if (!allocationUserId) {
+      setErr("Select a faculty member.");
+      return;
+    }
+    setErr("");
+    try {
+      const updated = await patchFacultySemesterSubjects(
+        allocationUserId,
+        allocationSemester,
+        allocationSubjects
+      );
+      if (updated?.userId) {
+        setFaculty((prev) =>
+          prev.map((u) => (u.userId === updated.userId ? { ...u, ...updated } : u))
+        );
+      }
+      flash(`Subjects (Sem ${allocationSemester}) saved for this faculty.`);
+      await load();
+    } catch (e) {
+      setErr(
+        e?.response?.data?.message || e.message || "Could not update faculty assignments."
+      );
+    }
+  }
+
+  async function onUploadSubjectCatalog(e) {
+    e.preventDefault();
+    if (!catalogFile) {
+      setErr("Select an Excel file first.");
+      return;
+    }
+    setErr("");
+    setCatalogUploading(true);
+    try {
+      await uploadSemesterSubjectCatalog(catalogFile, Number(catalogSemester));
+      setCatalogFile(null);
+      flash("Semester subject catalog uploaded.");
+      await load();
+      setAllocationSemester(Number(catalogSemester));
+    } catch (e) {
+      setErr(
+        e?.response?.data?.message ||
+          e.message ||
+          "Could not upload semester subject catalog."
+      );
+    } finally {
+      setCatalogUploading(false);
+    }
+  }
+
+  async function onDeleteTeacher(u) {
+    const label = u.displayLabel || u.userId;
+    const confirmed = window.confirm(
+      `Delete teacher "${label}" (${u.userId})?\n\n` +
+        "This removes the faculty account and permanently deletes all of their uploads and every student mark row tied to those uploads. Any class with this user as assigned teacher will have that field cleared.\n\n" +
+        "This cannot be undone."
+    );
+    if (!confirmed) return;
+    setErr("");
+    setDeletingUserId(u.userId);
+    try {
+      await deleteFaculty(u.userId);
+      flash("Teacher removed.");
+      if (allocationUserId === u.userId) {
+        setAllocationUserId("");
+      }
+      await load();
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Could not delete teacher.");
+    } finally {
+      setDeletingUserId("");
+    }
+  }
+
+  async function onDownloadTemplate() {
+    try {
+      const blob = await downloadSemesterSubjectCatalogTemplate();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "Subjects_Template.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Could not download template.");
+    }
+  }
+
+  return (
+    <div className="faculty-page admin-page">
+      <h1>Faculty Access</h1>
+      {msg ? (
+        <div className="banner" style={{ background: "#ecfdf5", color: "#065f46" }}>
+          {msg}
+        </div>
+      ) : null}
+      {err ? (
+        <div className="banner banner-error" role="alert">
+          {err}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <p className="sub">Loading…</p>
+      ) : (
+        <>
+          <div className="faculty-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Teacher ID</th>
+                  <th>Display label</th>
+                  <th>Email</th>
+                  <th>Contact</th>
+                  <th>Subject codes</th>
+                  <th>Assigned classes</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {faculty.map((u) => (
+                  <tr key={u.userId}>
+                    <td>
+                      <code>{u.userId}</code>
+                    </td>
+                    <td>{u.displayLabel || "—"}</td>
+                    <td>{u.email || "—"}</td>
+                    <td>{u.contact || "—"}</td>
+                    <td>{renderChips(u.subjectCodes)}</td>
+                    <td>{renderChips(u.assignedClasses)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn-danger faculty-access-delete"
+                        disabled={Boolean(deletingUserId)}
+                        onClick={() => onDeleteTeacher(u)}
+                      >
+                        {deletingUserId === u.userId ? "Removing…" : "Delete"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {faculty.length === 0 ? (
+              <p className="sub" style={{ padding: "1rem" }}>
+                No faculty rows yet.
+              </p>
+            ) : null}
+          </div>
+
+          <div className="faculty-form-grid">
+            <form onSubmit={onAddTeacher} className="access-card access-card-add">
+              <fieldset>
+                <legend>Add Teacher</legend>
+                <label>
+                  Teacher ID (login userId)
+                  <input
+                    value={newUserId}
+                    onChange={(e) => setNewUserId(e.target.value)}
+                    required
+                    placeholder="e.g. faculty01"
+                  />
+                </label>
+                <label>
+                  Display Label
+                  <input
+                    value={newLabel}
+                    onChange={(e) => setNewLabel(e.target.value)}
+                    placeholder="Dr. Example"
+                  />
+                </label>
+                <label>
+                  Email (optional)
+                  <input
+                    type="email"
+                    autoComplete="off"
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    placeholder="name@institution.edu"
+                  />
+                </label>
+                <label>
+                  Password (min 6 characters)
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Initial login password"
+                  />
+                </label>
+                <button type="submit" className="btn-primary-sm" style={{ marginTop: "0.5rem" }}>
+                  Add Teacher
+                </button>
+              </fieldset>
+            </form>
+
+            <form onSubmit={onUploadSubjectCatalog} className="access-card access-card-add">
+              <fieldset>
+                <legend>Upload Semester Subject Sheet</legend>
+                <p className="faculty-allocation-hint">
+                  Upload Excel with columns: <strong>Semester</strong>,{" "}
+                  <strong>Subject Code</strong>, <strong>Subject Name</strong>.
+                </p>
+                <button
+                  type="button"
+                  className="btn-muted"
+                  onClick={onDownloadTemplate}
+                  style={{ marginBottom: "0.5rem" }}
+                >
+                  Download Subject Template
+                </button>
+                <label>
+                  Semester
+                  <SearchableSelect
+                    value={catalogSemester}
+                    onChange={setCatalogSemester}
+                    options={Array.from({ length: 8 }, (_, i) => String(i + 1)).map((s) => ({
+                      value: s,
+                      label: `Force Semester ${s}`,
+                    }))}
+                    disabled={catalogUploading}
+                    placeholder="Force Semester 1-8"
+                    searchPlaceholder="Type semester number…"
+                  />
+                </label>
+                <label>
+                  Subject Catalog File (.xlsx/.xls)
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls"
+                    onChange={(e) => setCatalogFile(e.target.files?.[0] || null)}
+                    disabled={catalogUploading}
+                  />
+                </label>
+                <button
+                  type="submit"
+                  className="btn-primary-sm"
+                  style={{ marginTop: "0.5rem" }}
+                  disabled={catalogUploading || !catalogFile}
+                >
+                  {catalogUploading ? "Uploading…" : "Upload Subject Catalog"}
+                </button>
+              </fieldset>
+            </form>
+
+            <form
+              onSubmit={onSaveFacultyAllocation}
+              className="access-card access-card-allocation"
+            >
+              <fieldset>
+                <legend>Allocate Faculty — Subjects &amp; Classes</legend>
+                <label>
+                  Faculty
+                  <SearchableSelect
+                    value={allocationUserId}
+                    onChange={setAllocationUserId}
+                    options={faculty.map(toFacultySelectOption)}
+                    disabled={!faculty.length}
+                    placeholder="No Faculty Yet"
+                    searchPlaceholder="Search by name, email, or ID…"
+                  />
+                </label>
+                <label>
+                  Semester
+                  <SearchableSelect
+                    value={String(allocationSemester)}
+                    onChange={(v) => setAllocationSemester(Number(v))}
+                    options={semesterOptions}
+                    disabled={!faculty.length}
+                    placeholder="Select Semester"
+                    searchPlaceholder="Type semester number…"
+                  />
+                </label>
+                {selectedFaculty ? (
+                  <div className="faculty-allocation-hint" style={{ marginTop: "0.25rem" }}>
+                    <strong>Current semester-wise assignments:</strong>{" "}
+                    {selectedFacultySemesterAssignments.length === 0
+                      ? "None yet."
+                      : selectedFacultySemesterAssignments
+                          .map((row) =>
+                            `Sem ${row.semester}: ${
+                              row.subjectCodes.length ? row.subjectCodes.join(", ") : "—"
+                            }`
+                          )
+                          .join(" | ")}
+                  </div>
+                ) : null}
+                <label>
+                  Subject Codes
+                  <input
+                    className="searchable-select-input"
+                    type="text"
+                    value={allocationSubjectQuery}
+                    onChange={(e) => setAllocationSubjectQuery(e.target.value)}
+                    placeholder="Search Subject Code..."
+                    disabled={!faculty.length}
+                  />
+                  <select
+                    className="faculty-multi"
+                    multiple
+                    value={allocationSubjects}
+                    onChange={(e) =>
+                      setAllocationSubjects(
+                        [...e.target.selectedOptions].map((o) => o.value)
+                      )
+                    }
+                    disabled={!faculty.length}
+                    size={Math.min(12, Math.max(4, filteredSubjectOptions.length || 4))}
+                  >
+                    {filteredSubjectOptions.length === 0 ? (
+                      <option value="" disabled>
+                        No subject codes yet — upload marks or add curriculum first
+                      </option>
+                    ) : (
+                      filteredSubjectOptions.map((s) => (
+                        <option key={s.code} value={s.code}>
+                          {s.code}
+                          {s.name ? ` — ${s.name}` : ""}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+                <button
+                  type="submit"
+                  className="btn-primary-sm"
+                  style={{ marginTop: "0.5rem" }}
+                  disabled={!faculty.length}
+                >
+                  Save Faculty Assignments
+                </button>
+              </fieldset>
+            </form>
+
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+==================== FILE: client\src\pages\admin\AdminAnalyticsPage.jsx ====================
+
+import { useEffect, useMemo, useState } from "react";
+import { SubjectBellCurveChart } from "../../components/SubjectBellCurveChart.jsx";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
+import { fetchUploadRecords } from "../../api/analyticsApi.js";
+import { listFaculty, listFacultyUploadsForAdmin } from "../../api/adminApi.js";
+import { parseRowsToSubjectData } from "../../utils/sheetParser.js";
+import { facultyOptionLabel, facultyOptionSearchText } from "../../utils/facultySelect.js";
+import "../../styles/facultyPages.css";
+import "../../styles/adminPages.css";
+
+function canonicalSubjectCode(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  const firstToken = firstLine.split(/\s+/)[0].trim();
+  return firstToken.toUpperCase();
+}
+
+function inferSemesterValue(row) {
+  const direct = row?.semester;
+  if (direct != null && String(direct).trim() !== "") return String(direct).trim();
+  const classLabel = String(row?.classLabel ?? "").trim();
+  const m = classLabel.match(/sem(?:ester)?\s*[-: ]*\s*([1-8])/i);
+  return m?.[1] ? String(m[1]) : "";
+}
+
+export function AdminAnalyticsPage() {
+  const [faculty, setFaculty] = useState([]);
+  const [facultyId, setFacultyId] = useState("");
+  const [uploads, setUploads] = useState([]);
+  const [uploadId, setUploadId] = useState("");
+  const [rows, setRows] = useState([]);
+  const [semester, setSemester] = useState("");
+  const [facultyOptions, setFacultyOptions] = useState([]);
+  const facultySelectOptions = useMemo(
+    () =>
+      (facultyOptions || []).map((f) => {
+        const count = Number(f?.uploadCount || 0);
+        const suffix = count === 1 ? "1 upload" : `${count} uploads`;
+        return {
+          value: String(f?.userId || ""),
+          label: `${facultyOptionLabel(f)} (${suffix})`,
+          searchText: facultyOptionSearchText(f),
+        };
+      }),
+    [facultyOptions]
+  );
+
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+
+  const semesterOptions = useMemo(() => {
+    const vals = Array.from(
+      new Set(
+        (rows || [])
+          .map((r) => inferSemesterValue(r))
+          .filter(Boolean)
+      )
+    );
+    return vals.sort((a, b) => Number(a) - Number(b));
+  }, [rows]);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setErr("");
+      try {
+        const list = await listFaculty();
+        setFaculty(Array.isArray(list) ? list : []);
+        setFacultyOptions(Array.isArray(list) ? list : []);
+        if (list?.length) setFacultyId(list[0].userId);
+      } catch (e) {
+        setErr(e?.response?.data?.message || e.message || "Failed to load faculty list.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!facultyId) return;
+    (async () => {
+      setLoading(true);
+      setErr("");
+      try {
+        const list = await listFacultyUploadsForAdmin(facultyId);
+        setUploads(list);
+        const pick = list[0]?.uploadId || "";
+        setUploadId(pick);
+        if (!pick) {
+          setRows([]);
+          return;
+        }
+        const rec = await fetchUploadRecords(pick);
+        setRows(rec?.rows ?? []);
+      } catch (e) {
+        setErr(e?.response?.data?.message || e.message || "Failed to load faculty uploads.");
+        setRows([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [facultyId]);
+
+  async function onSelectUpload(nextUploadId) {
+    if (!nextUploadId) return;
+    setLoading(true);
+    setErr("");
+    try {
+      const rec = await fetchUploadRecords(nextUploadId);
+      setUploadId(nextUploadId);
+      setRows(rec?.rows ?? []);
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Failed to load selected upload.");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const scopedRows = useMemo(() => {
+    if (!semester) return rows;
+    return (rows || []).filter((r) => inferSemesterValue(r) === semester);
+  }, [rows, semester]);
+  const parsedData = useMemo(() => parseRowsToSubjectData(scopedRows), [scopedRows]);
+  const selectedFaculty = useMemo(
+    () => faculty.find((f) => f.userId === facultyId) || null,
+    [faculty, facultyId]
+  );
+  const preferredSubjectCode = useMemo(() => {
+    const first = selectedFaculty?.subjectCodes?.[0];
+    return canonicalSubjectCode(first);
+  }, [selectedFaculty]);
+
+  return (
+    <div className="faculty-page admin-page">
+      <h1>Analytics</h1>
+      <p className="sub">Bell curve analytics for selected faculty upload.</p>
+
+      {err ? (
+        <div className="banner banner-error" role="alert">
+          {err}
+        </div>
+      ) : null}
+
+      <div className="faculty-toolbar">
+        <label>
+          Faculty
+          <SearchableSelect
+            value={facultyId}
+            onChange={setFacultyId}
+            options={facultySelectOptions}
+            disabled={loading}
+            placeholder="No Faculty Available"
+            searchPlaceholder="Search by name, email, or ID…"
+          />
+        </label>
+        <label>
+          Uploaded dataset
+          <SearchableSelect
+            value={uploadId}
+            onChange={onSelectUpload}
+            options={uploads.map((u) => ({
+              value: u.uploadId,
+              label: `${u.classLabel || "Class?"} • ${u.uploadId} • ${new Date(
+                u.createdAt
+              ).toLocaleString()}`,
+            }))}
+            disabled={loading || uploads.length === 0}
+            placeholder="No Uploads Available"
+            searchPlaceholder="Search class, upload ID, or date…"
+          />
+        </label>
+        <label>
+          Semester
+          <SearchableSelect
+            value={semester}
+            onChange={setSemester}
+            options={semesterOptions.map((s) => ({ value: s, label: s }))}
+            disabled={loading}
+            placeholder="All Semesters"
+            searchPlaceholder="Type semester number…"
+          />
+        </label>
+      </div>
+
+      {loading ? (
+        <p className="sub">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="sub">No uploaded records found for selected faculty.</p>
+      ) : scopedRows.length === 0 ? (
+        <p className="sub">No rows found for selected semester.</p>
+      ) : (
+        <SubjectBellCurveChart
+          parsedData={parsedData}
+          preferredSubjectCode={preferredSubjectCode}
+        />
+      )}
+    </div>
+  );
+}
+
+
+==================== FILE: client\src\pages\admin\AdminStudentAnalysisPage.jsx ====================
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { fetchUploadRecords } from "../../api/analyticsApi.js";
+import { listFaculty, listFacultyUploadsForAdmin } from "../../api/adminApi.js";
+import "../../styles/facultyPages.css";
+import "../../styles/adminPages.css";
+import { downloadElementAsPng } from "../../utils/exportPng.js";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
+import { subjectDisplayName } from "../../utils/subjectLabel.js";
+import { facultyOptionLabel, facultyOptionSearchText } from "../../utils/facultySelect.js";
+
+const GRADE_ORDER = ["O", "A", "B", "C", "D", "E", "P", "F"];
+
+function classifyGradeFromPercentage(pct) {
+  if (!Number.isFinite(pct)) return null;
+  if (pct >= 85) return "O";
+  if (pct >= 80) return "A";
+  if (pct >= 70) return "B";
+  if (pct >= 60) return "C";
+  if (pct >= 50) return "D";
+  if (pct >= 45) return "E";
+  if (pct >= 40) return "P";
+  return "F";
+}
+
+function toFinite(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function detectMaxMarks(observedMax, fallbackMax) {
+  if (!Number.isFinite(observedMax) || observedMax <= 0) return fallbackMax;
+  if (observedMax <= 20) return 20;
+  if (observedMax <= 30) return 30;
+  if (observedMax <= 40) return 40;
+  if (observedMax <= 50) return 50;
+  return 100;
+}
+
+function subjectKey(row) {
+  const code = String(row?.subjectCode ?? "").trim();
+  const name = String(row?.subject ?? "").trim();
+  return code && name ? `${code} — ${name}` : code || name || "Unknown Subject";
+}
+
+function canonicalSubjectCode(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  const firstToken = firstLine.split(/\s+/)[0].trim();
+  return firstToken.toUpperCase();
+}
+
+function inferSemesterValue(row) {
+  const direct = row?.semester;
+  if (direct != null && String(direct).trim() !== "") return String(direct).trim();
+  const classLabel = String(row?.classLabel ?? "").trim();
+  const m = classLabel.match(/sem(?:ester)?\s*[-: ]*\s*([1-8])/i);
+  return m?.[1] ? String(m[1]) : "";
+}
+
+function buildExamGradeDistribution(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const observed = new Map();
+  for (const r of list) {
+    const key = subjectKey(r);
+    if (!observed.has(key)) observed.set(key, { ISE: [], ISE2: [], MSE: [], ESE: [] });
+    const bucket = observed.get(key);
+    const ise = toFinite(r?.ise1);
+    const ise2 = toFinite(r?.ise2);
+    const mse = toFinite(r?.mse);
+    const ese = toFinite(r?.ese);
+    if (ise != null && ise >= 0) bucket.ISE.push(ise);
+    if (ise2 != null && ise2 >= 0) bucket.ISE2.push(ise2);
+    if (mse != null && mse >= 0) bucket.MSE.push(mse);
+    if (ese != null && ese >= 0) bucket.ESE.push(ese);
+  }
+
+  const out = {};
+  for (const [key, vals] of observed.entries()) {
+    const maxISE = detectMaxMarks(vals.ISE.length ? Math.max(...vals.ISE) : null, 40);
+    const maxISE2 = detectMaxMarks(vals.ISE2.length ? Math.max(...vals.ISE2) : null, 50);
+    const maxMSE = detectMaxMarks(vals.MSE.length ? Math.max(...vals.MSE) : null, 30);
+    const maxESE = detectMaxMarks(vals.ESE.length ? Math.max(...vals.ESE) : null, 30);
+    const counts = Object.fromEntries(
+      GRADE_ORDER.map((g) => [g, { grade: g, ISE: 0, ISE2: 0, MSE: 0, ESE: 0 }])
+    );
+
+    for (const r of list) {
+      if (subjectKey(r) !== key) continue;
+      const ise = toFinite(r?.ise1);
+      const ise2 = toFinite(r?.ise2);
+      const mse = toFinite(r?.mse);
+      const ese = toFinite(r?.ese);
+
+      const gIse = classifyGradeFromPercentage(ise != null ? (ise / maxISE) * 100 : NaN);
+      const gIse2 = classifyGradeFromPercentage(ise2 != null ? (ise2 / maxISE2) * 100 : NaN);
+      const gMse = classifyGradeFromPercentage(mse != null ? (mse / maxMSE) * 100 : NaN);
+      const gEse = classifyGradeFromPercentage(ese != null ? (ese / maxESE) * 100 : NaN);
+
+      if (gIse) counts[gIse].ISE += 1;
+      if (gIse2) counts[gIse2].ISE2 += 1;
+      if (gMse) counts[gMse].MSE += 1;
+      if (gEse) counts[gEse].ESE += 1;
+    }
+    out[key] = GRADE_ORDER.map((g) => counts[g]);
+  }
+  return out;
+}
+
+export function AdminStudentAnalysisPage() {
+  const barCaptureRef = useRef(null);
+  const lineCaptureRef = useRef(null);
+  const [faculty, setFaculty] = useState([]);
+  const [facultyId, setFacultyId] = useState("");
+  const [uploads, setUploads] = useState([]);
+  const [uploadId, setUploadId] = useState("");
+  const [rows, setRows] = useState([]);
+  const [semester, setSemester] = useState("");
+  const [subject, setSubject] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [bulkPngBusy, setBulkPngBusy] = useState(false);
+  const facultySelectOptions = useMemo(
+    () =>
+      (faculty || []).map((f) => {
+        const count = Number(f?.uploadCount || 0);
+        const suffix = count === 1 ? "1 upload" : `${count} uploads`;
+        return {
+          value: String(f?.userId || ""),
+          label: `${facultyOptionLabel(f)} (${suffix})`,
+          searchText: facultyOptionSearchText(f),
+        };
+      }),
+    [faculty]
+  );
+
+
+  const semesterOptions = useMemo(() => {
+    const vals = Array.from(
+      new Set(
+        (rows || [])
+          .map((r) => inferSemesterValue(r))
+          .filter(Boolean)
+      )
+    );
+    return vals.sort((a, b) => Number(a) - Number(b));
+  }, [rows]);
+
+  const scopedRows = useMemo(() => {
+    if (!semester) return rows;
+    return (rows || []).filter((r) => inferSemesterValue(r) === semester);
+  }, [rows, semester]);
+
+  const bySubject = useMemo(() => buildExamGradeDistribution(scopedRows), [scopedRows]);
+  const subjects = useMemo(() => Object.keys(bySubject), [bySubject]);
+  const chartData = bySubject[subject] ?? [];
+  const selectedFaculty = useMemo(
+    () => faculty.find((f) => f.userId === facultyId) || null,
+    [faculty, facultyId]
+  );
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setErr("");
+      try {
+        const list = await listFaculty();
+        setFaculty(Array.isArray(list) ? list : []);
+        if (list?.length) setFacultyId(list[0].userId);
+      } catch (e) {
+        setErr(e?.response?.data?.message || e.message || "Failed to load faculty list.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!facultyId) return;
+    (async () => {
+      setLoading(true);
+      setErr("");
+      try {
+        const list = await listFacultyUploadsForAdmin(facultyId);
+        setUploads(list);
+        const pick = list[0]?.uploadId || "";
+        setUploadId(pick);
+        if (!pick) {
+          setRows([]);
+          return;
+        }
+        const rec = await fetchUploadRecords(pick);
+        setRows(rec?.rows ?? []);
+      } catch (e) {
+        setErr(e?.response?.data?.message || e.message || "Failed to load faculty uploads.");
+        setRows([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [facultyId]);
+
+  useEffect(() => {
+    if (!subject && subjects.length) setSubject(subjects[0]);
+    if (subject && !subjects.includes(subject)) setSubject(subjects[0] || "");
+  }, [subject, subjects]);
+
+  useEffect(() => {
+    if (!subjects.length) return;
+    const assignedCodes = new Set(
+      (selectedFaculty?.subjectCodes ?? [])
+        .map((c) => canonicalSubjectCode(c))
+        .filter(Boolean)
+    );
+    if (!assignedCodes.size) {
+      setSubject(subjects[0]);
+      return;
+    }
+    const match = subjects.find((s) => {
+      const codePart = String(s).split("—")[0]?.trim() ?? "";
+      return assignedCodes.has(canonicalSubjectCode(codePart));
+    });
+    setSubject(match || subjects[0]);
+  }, [semester, facultyId, subjects, selectedFaculty]);
+
+  useEffect(() => {
+    if (!semester && semesterOptions.length) {
+      // Keep default as all semesters.
+      return;
+    }
+    if (semester && !semesterOptions.includes(semester)) {
+      setSemester("");
+    }
+  }, [semester, semesterOptions]);
+
+  async function onSelectUpload(nextUploadId) {
+    if (!nextUploadId) return;
+    setLoading(true);
+    setErr("");
+    try {
+      const rec = await fetchUploadRecords(nextUploadId);
+      setUploadId(nextUploadId);
+      setRows(rec?.rows ?? []);
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Failed to load selected upload.");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onDownloadBarPng() {
+    await downloadElementAsPng(barCaptureRef.current, `${subject}-admin-grade-band-bar`);
+  }
+
+  async function onDownloadLinePng() {
+    await downloadElementAsPng(lineCaptureRef.current, `${subject}-admin-grade-band-polygon`);
+  }
+
+  function subjectFileSlug(s) {
+    const display = subjectDisplayName(s);
+    return display
+      .replace(/[\\/:*?"<>|]+/g, "_")
+      .replace(/\s+/g, "-")
+      .slice(0, 96);
+  }
+
+  async function waitForCharts() {
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setTimeout(resolve, 420);
+        });
+      });
+    });
+  }
+
+  async function onDownloadAllSubjectsPngs() {
+    if (!semester) {
+      setErr("Select a semester first, then download PNGs for all subjects in that semester.");
+      return;
+    }
+    if (!subjects.length) {
+      setErr("No subjects available for the current filters.");
+      return;
+    }
+    if (scopedRows.length === 0) {
+      setErr("No rows for the selected semester.");
+      return;
+    }
+
+    setBulkPngBusy(true);
+    setErr("");
+    const previousSubject = subject;
+    const list = [...subjects];
+    const semLabel = String(semester).replace(/[^\w.-]+/g, "_");
+
+    try {
+      for (const subj of list) {
+        flushSync(() => setSubject(subj));
+        await waitForCharts();
+        const base = `${semLabel}-${subjectFileSlug(subj)}`;
+        await downloadElementAsPng(barCaptureRef.current, `${base}-admin-grade-band-bar`);
+        await downloadElementAsPng(lineCaptureRef.current, `${base}-admin-grade-band-polygon`);
+      }
+    } catch (e) {
+      setErr(e?.message || "Bulk PNG export failed.");
+    } finally {
+      if (previousSubject && subjects.includes(previousSubject)) {
+        flushSync(() => setSubject(previousSubject));
+      } else if (subjects[0]) {
+        flushSync(() => setSubject(subjects[0]));
+      }
+      await waitForCharts();
+      setBulkPngBusy(false);
+    }
+  }
+
+  return (
+    <div className="faculty-page admin-page">
+      <h1>Grade Band</h1>
+      <p className="sub">Faculty-wise student analytics from uploaded datasets.</p>
+
+      <div className="faculty-toolbar">
+        <label>
+          Faculty
+          <SearchableSelect
+            value={facultyId}
+            onChange={setFacultyId}
+            options={facultySelectOptions}
+            disabled={loading || bulkPngBusy}
+            placeholder="No Faculty Available"
+            searchPlaceholder="Search by name, email, or ID…"
+          />
+        </label>
+        <label>
+          Uploaded dataset
+          <SearchableSelect
+            value={uploadId}
+            onChange={onSelectUpload}
+            options={uploads.map((u) => ({
+              value: u.uploadId,
+              label: `${u.classLabel || "Class?"} • ${u.uploadId} • ${new Date(
+                u.createdAt
+              ).toLocaleString()}`,
+            }))}
+            disabled={loading || uploads.length === 0 || bulkPngBusy}
+            placeholder="No Uploads Available"
+            searchPlaceholder="Search class, upload ID, or date…"
+          />
+        </label>
+        <label>
+          Semester
+          <SearchableSelect
+            value={semester}
+            onChange={setSemester}
+            options={semesterOptions.map((s) => ({ value: s, label: s }))}
+            disabled={loading || bulkPngBusy}
+            placeholder="All Semesters"
+            searchPlaceholder="Type semester number…"
+          />
+        </label>
+        <label>
+          Subject
+          <SearchableSelect
+            value={subject}
+            onChange={setSubject}
+            options={subjects.map((s) => ({ value: s, label: subjectDisplayName(s) }))}
+            disabled={loading || subjects.length === 0 || bulkPngBusy}
+            placeholder="No Subject Data"
+            searchPlaceholder="Search code or subject name…"
+          />
+        </label>
+        <div className="faculty-toolbar-spacer" aria-hidden="true" />
+        <label className="faculty-toolbar-bulk-png">
+          <span className="faculty-toolbar-bulk-png-label">Semester PNG pack</span>
+          <button
+            type="button"
+            className="btn-primary-sm"
+            onClick={onDownloadAllSubjectsPngs}
+            disabled={
+              bulkPngBusy ||
+              loading ||
+              !semester ||
+              subjects.length === 0 ||
+              scopedRows.length === 0
+            }
+            title={
+              !semester
+                ? "Pick a semester first (not “All semesters”)."
+                : "Downloads bar + line chart PNG for every subject in this semester."
+            }
+          >
+            {bulkPngBusy ? "Exporting PNGs…" : "Download all subjects (PNG)"}
+          </button>
+        </label>
+      </div>
+
+      {err ? (
+        <div className="banner banner-error" role="alert">
+          {err}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <p className="sub">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="sub">No uploaded records found for the selected faculty.</p>
+      ) : scopedRows.length === 0 ? (
+        <p className="sub">No rows found for selected semester.</p>
+      ) : !subject ? (
+        <p className="sub">No subject data found for selected upload.</p>
+      ) : (
+        <section className="grade-band-block">
+            <div className="chart-card" style={{ border: "none", marginBottom: "1rem" }} ref={barCaptureRef}>
+              <h2 style={{ fontSize: "1.05rem", textAlign: "center", fontWeight: 700 }}>
+                {subjectDisplayName(subject)}
+              </h2>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <button type="button" className="btn-png" onClick={onDownloadBarPng}>
+                  Download PNG
+                </button>
+              </div>
+              <div className="chart-wrap" style={{ height: 340 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="grade" />
+                    <YAxis allowDecimals={false} label={{ value: "No. of students", angle: -90, position: "insideLeft" }} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="ISE" fill="#3b6fb6" />
+                    <Bar dataKey="ISE2" fill="#ed8936" name="ISE-TUT" />
+                    <Bar dataKey="MSE" fill="#9e9e9e" />
+                    <Bar dataKey="ESE" fill="#f3c200" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="chart-card" style={{ border: "none", marginBottom: 0 }} ref={lineCaptureRef}>
+              <h2 style={{ fontSize: "1rem", textAlign: "center", fontWeight: 700 }}>
+                Frequency polygon (same distribution)
+              </h2>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <button type="button" className="btn-png" onClick={onDownloadLinePng}>
+                  Download PNG
+                </button>
+              </div>
+              <div className="chart-wrap" style={{ height: 340 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="grade" />
+                    <YAxis allowDecimals={false} label={{ value: "No. of students", angle: -90, position: "insideLeft" }} />
+                    <Tooltip />
+                    <Legend />
+                    <Line type="monotone" dataKey="ISE" stroke="#3b6fb6" strokeWidth={2} dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="ISE2" name="ISE-TUT" stroke="#ed8936" strokeWidth={2} dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="MSE" stroke="#9e9e9e" strokeWidth={2} dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="ESE" stroke="#f3c200" strokeWidth={2} dot={{ r: 3 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </section>
+      )}
+    </div>
+  );
+}
+
+
+==================== FILE: client\src\pages\faculty\AnalyticsPage.jsx ====================
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchMyUploads, fetchUploadRecords } from "../../api/analyticsApi.js";
+import { SubjectBellCurveChart } from "../../components/SubjectBellCurveChart.jsx";
+import { PsychometricTable } from "../../components/PsychometricTable";
+import { CompetencyRadar } from "../../components/CompetencyRadar";
+import { GraderVarianceAlert } from "../../components/GraderVarianceAlert";
+import { SearchableSelect } from "../../components/SearchableSelect.jsx";
+import { useGradingAnalytics } from "../../hooks/useGradingAnalytics";
+import { parseRowsToSubjectData } from "../../utils/sheetParser.js";
+import "../../styles/facultyPages.css";
+
+function toFinite(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function componentSpecsFromRow(row) {
+  const code = String(row?.subjectCode || row?.subject || "SUB").trim() || "SUB";
+  const name = String(row?.subject || row?.subjectCode || "Subject").trim() || "Subject";
+  const tag = code;
+  return [
+    { key: `${code}|ISE1`, label: `${code} ISE-TH`, maxScore: 40, score: toFinite(row?.ise1), tags: [tag, name] },
+    { key: `${code}|ISE2`, label: `${code} ISE-TUT`, maxScore: 50, score: toFinite(row?.ise2), tags: [tag, name] },
+    { key: `${code}|MSE`, label: `${code} MSE`, maxScore: 30, score: toFinite(row?.mse), tags: [tag, name] },
+    { key: `${code}|ESE`, label: `${code} ESE`, maxScore: 30, score: toFinite(row?.ese), tags: [tag, name] },
+  ];
+}
+
+export function AnalyticsPage() {
+  const [uploads, setUploads] = useState([]);
+  const [currentUploadId, setCurrentUploadId] = useState("");
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const parsedData = useMemo(() => parseRowsToSubjectData(rows), [rows]);
+  const analyticsInput = useMemo(() => {
+    const questionMap = new Map();
+    const studentMap = new Map();
+    let unknownCounter = 0;
+
+    for (const row of rows || []) {
+      const studentId =
+        String(row?.roll || row?.prn || row?.name || "").trim() ||
+        `student-row-${++unknownCounter}`;
+      if (!studentMap.has(studentId)) {
+        studentMap.set(studentId, {
+          studentId,
+          graderId: row?.graderId || row?.taId || row?.evaluatorId || undefined,
+          questionScores: [],
+        });
+      }
+      const student = studentMap.get(studentId);
+
+      for (const spec of componentSpecsFromRow(row)) {
+        if (spec.score == null) continue;
+        if (!questionMap.has(spec.key)) {
+          questionMap.set(spec.key, {
+            id: spec.key,
+            label: spec.label,
+            maxScore: spec.maxScore,
+            learningObjectiveTags: spec.tags,
+          });
+        }
+        student.questionScores.push({
+          questionId: spec.key,
+          score: spec.score,
+          graderId: student.graderId,
+        });
+      }
+    }
+
+    return {
+      exam: {
+        id: currentUploadId || "upload-analytics",
+        title: "Upload psychometric model",
+        questions: Array.from(questionMap.values()),
+      },
+      studentResults: Array.from(studentMap.values()),
+    };
+  }, [rows, currentUploadId]);
+
+  const { psychometrics, anomalousQuestions, competencyData, graderVariance } =
+    useGradingAnalytics({
+      exam: analyticsInput.exam,
+      studentResults: analyticsInput.studentResults,
+      graderStdDevThresholdPercent: 10,
+    });
+
+  const load = useCallback(async () => {
+    setErr("");
+    setLoading(true);
+    try {
+      const list = await fetchMyUploads();
+      setUploads(list);
+      const pick = list[0]?.uploadId || "";
+      if (!pick) {
+        setCurrentUploadId("");
+        setRows([]);
+        return;
+      }
+      setCurrentUploadId(pick);
+      const rec = await fetchUploadRecords(pick);
+      setRows(rec?.rows ?? []);
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Failed to load analytics data.");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function onSelectUpload(uploadId) {
+    if (!uploadId) return;
+    setLoading(true);
+    setErr("");
+    try {
+      const rec = await fetchUploadRecords(uploadId);
+      setCurrentUploadId(uploadId);
+      setRows(rec?.rows ?? []);
+    } catch (e) {
+      setErr(e?.response?.data?.message || e.message || "Failed to load selected upload.");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="faculty-page">
+      <h1>Analytics</h1>
+      <p className="sub">Per-subject histogram with fitted bell curve for uploaded results.</p>
+
+      <div className="faculty-toolbar">
+        <label>
+          Uploaded dataset
+          <SearchableSelect
+            value={currentUploadId}
+            onChange={onSelectUpload}
+            options={uploads.map((u) => ({
+              value: u.uploadId,
+              label: `${u.classLabel || "Class?"} • ${u.uploadId} • ${new Date(
+                u.createdAt
+              ).toLocaleString()}`,
+            }))}
+            disabled={loading || uploads.length === 0}
+            placeholder="No Uploads Available"
+            searchPlaceholder="Search class, upload ID, or date…"
+          />
+        </label>
+      </div>
+
+      {currentUploadId ? (
+        <div className="stats-row">
+          <span>Upload: {currentUploadId}</span>
+          <span>
+            Subjects: {Object.keys(parsedData).length}
+          </span>
+          <span>Rows: {rows.length}</span>
+          <span>
+            Class: {uploads.find((u) => u.uploadId === currentUploadId)?.classLabel || "N/A"}
+          </span>
+        </div>
+      ) : null}
+
+      {err ? (
+        <div className="banner banner-error" role="alert">
+          {err}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <p className="sub">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="sub">No uploaded records found. Upload a file first.</p>
+      ) : (
+        <>
+          <SubjectBellCurveChart parsedData={parsedData} />
+
+          <div className="chart-card">
+            <h2>Grader consistency audit</h2>
+            <GraderVarianceAlert variance={graderVariance} />
+          </div>
+
+          <div className="chart-card">
+            <h2>Competency mapping</h2>
+            <CompetencyRadar data={competencyData} />
+          </div>
+
+          <div className="chart-card">
+            <h2>Psychometric analysis</h2>
+            <p className="chart-hint" style={{ marginBottom: "0.6rem" }}>
+              Anomalous questions: {anomalousQuestions.length} / {psychometrics.length}
+            </p>
+            <PsychometricTable rows={psychometrics} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+==================== FILE: client\src\api\adminApi.js ====================
+
+import { api } from "./index.js";
+
+export async function fetchAdminDashboard(params) {
+  const { data } = await api.get("/api/admin/dashboard", { params });
+  return data;
+}
+
+export async function fetchAdminExamUpdates() {
+  const { data } = await api.get("/api/admin/exam-updates");
+  return data?.updates ?? [];
+}
+
+export async function createAdminExamUpdate(message) {
+  const { data } = await api.post("/api/admin/exam-updates", { message });
+  return data;
+}
+
+export async function fetchAdminSettings() {
+  const { data } = await api.get("/api/admin/settings");
+  return data;
+}
+
+export async function patchAdminSettings(body) {
+  const { data } = await api.patch("/api/admin/settings", body);
+  return data;
+}
+
+export async function fetchAdminMeta(params) {
+  const { data } = await api.get("/api/admin/meta", { params });
+  return data;
+}
+
+export async function fetchFacultyOGradeDistribution(params) {
+  const { data } = await api.get("/api/admin/faculty-o-grade-distribution", { params });
+  return data?.distribution ?? [];
+}
+
+export async function fetchSemesterSubjectCatalog() {
+  const { data } = await api.get("/api/admin/semester-subject-catalog");
+  return data?.semesters ?? [];
+}
+
+export async function fetchSubjectSemesters() {
+  const { data } = await api.get("/api/subjects/semesters");
+  return Array.isArray(data) ? data : [];
+}
+
+export async function fetchSubjectsBySemester(semester) {
+  const { data } = await api.get("/api/subjects", {
+    params: { semester },
+  });
+  return Array.isArray(data) ? data : [];
+}
+
+export async function uploadSemesterSubjectCatalog(file, semester) {
+  const form = new FormData();
+  form.append("file", file);
+  if (semester != null && String(semester).trim() !== "") {
+    form.append("semester", String(semester));
+  }
+  const { data } = await api.post("/api/admin/semester-subject-catalog/upload", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function downloadSemesterSubjectCatalogTemplate() {
+  const { data } = await api.get("/api/admin/semester-subject-catalog/template", {
+    responseType: "blob",
+  });
+  return data;
+}
+
+export async function fetchReviewRows(params) {
+  const { data } = await api.get("/api/admin/review-rows", { params });
+  return data;
+}
+
+export async function deleteAllMarksInDb() {
+  return api.delete("/api/admin/students/marks", {
+    headers: { "X-Confirm-Phrase": "DELETE_ALL_MARKS" },
+  });
+}
+
+export async function fetchGradeBandsPooled(params) {
+  const { data } = await api.get("/api/admin/grade-bands-pooled", { params });
+  return data;
+}
+
+export async function downloadGradeBandsXlsx(params) {
+  const { data } = await api.get("/api/analytics/grade-bands-xlsx", {
+    params,
+    responseType: "blob",
+  });
+  return data;
+}
+
+export async function listFaculty() {
+  const { data } = await api.get("/api/admin/faculty");
+  return data;
+}
+
+export async function createFaculty(body) {
+  const { data } = await api.post("/api/admin/faculty", body);
+  return data;
+}
+
+export async function deleteFaculty(userId) {
+  return api.delete(`/api/admin/faculty/${encodeURIComponent(userId)}`);
+}
+
+export async function patchFacultySubjects(userId, subjectCodes) {
+  const { data } = await api.patch(
+    `/api/admin/faculty/${encodeURIComponent(userId)}/subjects`,
+    { subjectCodes }
+  );
+  return data;
+}
+
+export async function patchFacultySemesterSubjects(userId, semester, subjectCodes) {
+  const { data } = await api.patch(
+    `/api/admin/faculty/${encodeURIComponent(userId)}/semester-subjects`,
+    { semester, subjectCodes }
+  );
+  return data;
+}
+
+export async function patchFacultyClasses(userId, assignedClasses) {
+  const { data } = await api.patch(
+    `/api/admin/faculty/${encodeURIComponent(userId)}/classes`,
+    { assignedClasses }
+  );
+  return data;
+}
+
+export async function listSchoolClasses() {
+  const { data } = await api.get("/api/admin/classes");
+  return data;
+}
+
+export async function createSchoolClass(body) {
+  const { data } = await api.post("/api/admin/classes", body);
+  return data;
+}
+
+export async function patchClassTeacher(classLabel, teacherUserId) {
+  const { data } = await api.patch(
+    `/api/admin/classes/${encodeURIComponent(classLabel)}/teacher`,
+    { teacherUserId }
+  );
+  return data;
+}
+
+export async function patchClassCurriculum(classLabel, subjectsText) {
+  const { data } = await api.patch(
+    `/api/admin/classes/${encodeURIComponent(classLabel)}/curriculum`,
+    { subjectsText }
+  );
+  return data;
+}
+
+export async function listFacultyUploadsForAdmin(userId) {
+  const { data } = await api.get(`/api/admin/faculty/${encodeURIComponent(userId)}/uploads`);
+  return data?.uploads ?? [];
+}
+
+
+==================== FILE: client\src\api\analyticsApi.js ====================
+
+import { api } from "./index.js";
+
+export async function fetchDashboard(params) {
+  const { data } = await api.get("/api/analytics/dashboard", { params });
+  return data;
+}
+
+export async function fetchExamUpdates() {
+  const { data } = await api.get("/api/analytics/exam-updates");
+  return data?.updates ?? [];
+}
+
+export async function fetchExamProgression(params) {
+  const { data } = await api.get("/api/analytics/exam-progression", { params });
+  return data;
+}
+
+export async function fetchBellCurve(params) {
+  const { data } = await api.get("/api/analytics/bell-curve", { params });
+  return data;
+}
+
+export async function fetchSubjectAvg(params) {
+  const { data } = await api.get("/api/analytics/subject-avg", { params });
+  return data;
+}
+
+export async function fetchGradeBands(params) {
+  const { data } = await api.get("/api/analytics/grade-bands", { params });
+  return data;
+}
+
+export async function fetchPercentageRanges(params) {
+  const { data } = await api.get("/api/analytics/percentage-ranges", { params });
+  return data;
+}
+
+export async function fetchUploadRecords(uploadId) {
+  const { data } = await api.get(`/api/upload/${encodeURIComponent(uploadId)}/records`);
+  return data;
+}
+
+export async function downloadOriginalUploadFile(uploadId) {
+  const { data, headers } = await api.get(
+    `/api/upload/${encodeURIComponent(uploadId)}/file`,
+    { responseType: "blob" }
+  );
+  return { blob: data, headers };
+}
+
+export async function downloadUploadTemplateFile() {
+  const { data, headers } = await api.get("/api/upload/template", {
+    responseType: "blob",
+  });
+  return { blob: data, headers };
+}
+
+export async function fetchMyUploads() {
+  const { data } = await api.get("/api/upload/my-uploads");
+  return data?.uploads ?? [];
+}
+
+export async function fetchUploadAnalytics(uploadId) {
+  const { data } = await api.get(`/api/upload/${encodeURIComponent(uploadId)}/analytics`);
+  return data;
+}
+
+export async function deleteUploadData(uploadId) {
+  const { data } = await api.delete(`/api/upload/${encodeURIComponent(uploadId)}`);
+  return data;
+}
+
+export async function askHelpChat(message, history = []) {
+  const { data } = await api.post("/api/analytics/help-chat", { message, history });
+  return data;
+}

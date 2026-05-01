@@ -4,10 +4,11 @@ import {
   deleteFaculty,
   fetchAdminMeta,
   fetchSemesterSubjectCatalog,
+  fetchSubjectSemesters,
+  fetchSubjectsBySemester,
   listFaculty,
   listSchoolClasses,
   patchFacultySemesterSubjects,
-  patchFacultySubjects,
   downloadSemesterSubjectCatalogTemplate,
   uploadSemesterSubjectCatalog,
 } from "../../api/adminApi.js";
@@ -20,6 +21,8 @@ export function FacultyAccessPage() {
   const [faculty, setFaculty] = useState([]);
   const [classes, setClasses] = useState([]);
   const [meta, setMeta] = useState({ classes: [], subjectCodes: [] });
+  const [subjectSemesters, setSubjectSemesters] = useState([]);
+  const [semesterSubjects, setSemesterSubjects] = useState([]);
   const [semesterCatalog, setSemesterCatalog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -39,24 +42,62 @@ export function FacultyAccessPage() {
   const [catalogSemester, setCatalogSemester] = useState("1");
   const [catalogUploading, setCatalogUploading] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState("");
+  const semesterOptions = useMemo(() => {
+    const fromApi = (Array.isArray(subjectSemesters) ? subjectSemesters : [])
+      .map((s) => Number(s))
+      .filter((s) => Number.isFinite(s));
+    const fallback = Array.from({ length: 8 }, (_, i) => i + 1);
+    const merged = [...new Set(fromApi.length ? fromApi : fallback)].sort((a, b) => a - b);
+    return merged.map((s) => ({ value: String(s), label: `Semester ${s}` }));
+  }, [subjectSemesters]);
 
   const load = useCallback(async () => {
     setErr("");
     setLoading(true);
     try {
-      const [f, c, m] = await Promise.all([
+      const [fRes, cRes, mRes, semRes, catRes] = await Promise.allSettled([
         listFaculty(),
         listSchoolClasses(),
         fetchAdminMeta(),
+        fetchSubjectSemesters(),
+        fetchSemesterSubjectCatalog(),
       ]);
-      const semCatalog = await fetchSemesterSubjectCatalog();
-      setFaculty(Array.isArray(f) ? f : []);
-      setClasses(Array.isArray(c) ? c : []);
-      setSemesterCatalog(Array.isArray(semCatalog) ? semCatalog : []);
-      setMeta({
-        classes: Array.isArray(m?.classes) ? m.classes : [],
-        subjectCodes: Array.isArray(m?.subjectCodes) ? m.subjectCodes : [],
-      });
+
+      if (fRes.status === "fulfilled") {
+        setFaculty(Array.isArray(fRes.value) ? fRes.value : []);
+      }
+      if (cRes.status === "fulfilled") {
+        setClasses(Array.isArray(cRes.value) ? cRes.value : []);
+      }
+      if (mRes.status === "fulfilled") {
+        const m = mRes.value;
+        setMeta({
+          classes: Array.isArray(m?.classes) ? m.classes : [],
+          subjectCodes: Array.isArray(m?.subjectCodes) ? m.subjectCodes : [],
+        });
+      }
+      if (semRes.status === "fulfilled") {
+        const semesters = semRes.value;
+        setSubjectSemesters(
+          (Array.isArray(semesters) ? semesters : [])
+            .map((s) => Number(s))
+            .filter((s) => Number.isFinite(s))
+            .sort((a, b) => a - b)
+        );
+      }
+      if (catRes.status === "fulfilled") {
+        setSemesterCatalog(Array.isArray(catRes.value) ? catRes.value : []);
+      }
+
+      if (
+        fRes.status !== "fulfilled" &&
+        cRes.status !== "fulfilled" &&
+        mRes.status !== "fulfilled" &&
+        semRes.status !== "fulfilled" &&
+        catRes.status !== "fulfilled"
+      ) {
+        throw new Error("Failed to load admin data.");
+      }
     } catch (e) {
       setErr(e?.response?.data?.message || e.message || "Failed to load.");
     } finally {
@@ -87,38 +128,65 @@ export function FacultyAccessPage() {
     }
   }, [allocationUserId, allocationSemester, faculty]);
 
+  useEffect(() => {
+    if (!subjectSemesters.length) return;
+    const current = Number(allocationSemester);
+    const present = subjectSemesters.some((s) => Number(s) === current);
+    if (!present) {
+      setAllocationSemester(Number(subjectSemesters[0]));
+    }
+  }, [subjectSemesters, allocationSemester]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSubjectsBySemester(allocationSemester)
+      .then((rows) => {
+        if (cancelled) return;
+        const byApi = Array.isArray(rows) ? rows : [];
+        if (byApi.length > 0) {
+          setSemesterSubjects(byApi);
+          return;
+        }
+        const fromCatalog = (Array.isArray(semesterCatalog) ? semesterCatalog : []).find(
+          (s) => Number(s?.semester) === Number(allocationSemester)
+        );
+        const fallbackRows = (fromCatalog?.subjects ?? []).map((s) => ({
+          subject_code: String(s?.code || "").trim(),
+          subject_name: String(s?.name || "").trim(),
+        }));
+        setSemesterSubjects(fallbackRows);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const fromCatalog = (Array.isArray(semesterCatalog) ? semesterCatalog : []).find(
+          (s) => Number(s?.semester) === Number(allocationSemester)
+        );
+        const fallbackRows = (fromCatalog?.subjects ?? []).map((s) => ({
+          subject_code: String(s?.code || "").trim(),
+          subject_name: String(s?.name || "").trim(),
+        }));
+        setSemesterSubjects(fallbackRows);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [allocationSemester, semesterCatalog]);
+
   const subjectOptions = useMemo(() => {
-    const fromCatalog = semesterCatalog.find(
-      (s) => Number(s?.semester) === Number(allocationSemester)
-    );
-    const mapped = (fromCatalog?.subjects ?? []).map((s) => ({
-      code: String(s.code).trim(),
-      name: String(s.name || "").trim(),
+    const mapped = (Array.isArray(semesterSubjects) ? semesterSubjects : []).map((s) => ({
+      code: String(s.subject_code || "").trim(),
+      name: String(s.subject_name || "").trim(),
     }));
-    const map = new Map();
+    const strictMap = new Map();
     for (const s of mapped) {
-      if (s.code) map.set(s.code, s.name);
+      if (s.code) strictMap.set(s.code, s.name);
     }
-    for (const code of meta.subjectCodes ?? []) {
-      const c = String(code).trim();
-      if (c && !map.has(c)) map.set(c, "");
-    }
-    for (const code of allocationSubjects ?? []) {
-      const c = String(code).trim();
-      if (c && !map.has(c)) map.set(c, "");
-    }
-    // Accept ratio text inside brackets with flexible formats, e.g. (3:1), (2-0-2), (TH:PR)
-    const hasBracketRatio = (value) => /\([^)]*[:\/-][^)]*\)/.test(String(value || ""));
-
-    const namedSubjects = [...map.entries()]
+    const namedSubjects = [...strictMap.entries()]
       .map(([code, name]) => ({ code, name }))
-      .filter((s) => Boolean(s.code) && Boolean(s.name));
+      .filter((s) => Boolean(s.code));
 
-    const ratioNamedSubjects = namedSubjects.filter((s) => hasBracketRatio(s.name));
-    const finalSubjects = ratioNamedSubjects.length > 0 ? ratioNamedSubjects : namedSubjects;
-
-    return finalSubjects.sort((a, b) => a.code.localeCompare(b.code));
-  }, [semesterCatalog, allocationSemester, meta.subjectCodes, allocationSubjects]);
+    return namedSubjects.sort((a, b) => a.code.localeCompare(b.code));
+  }, [semesterSubjects]);
 
   const filteredSubjectOptions = useMemo(() => {
     const q = String(allocationSubjectQuery || "").trim().toLowerCase();
@@ -129,6 +197,26 @@ export function FacultyAccessPage() {
       return code.includes(q) || name.includes(q);
     });
   }, [allocationSubjectQuery, subjectOptions]);
+
+  const selectedFaculty = useMemo(
+    () => faculty.find((u) => u.userId === allocationUserId) || null,
+    [faculty, allocationUserId]
+  );
+
+  const selectedFacultySemesterAssignments = useMemo(() => {
+    const rows = Array.isArray(selectedFaculty?.semesterSubjectAssignments)
+      ? selectedFaculty.semesterSubjectAssignments
+      : [];
+    return [...rows]
+      .map((row) => ({
+        semester: Number(row?.semester),
+        subjectCodes: Array.isArray(row?.subjectCodes)
+          ? row.subjectCodes.map((c) => String(c || "").trim()).filter(Boolean)
+          : [],
+      }))
+      .filter((row) => Number.isFinite(row.semester))
+      .sort((a, b) => a.semester - b.semester);
+  }, [selectedFaculty]);
 
   function flash(message) {
     setMsg(message);
@@ -180,14 +268,16 @@ export function FacultyAccessPage() {
     }
     setErr("");
     try {
-      await Promise.all([
-        patchFacultySemesterSubjects(
-          allocationUserId,
-          allocationSemester,
-          allocationSubjects
-        ),
-        patchFacultySubjects(allocationUserId, allocationSubjects),
-      ]);
+      const updated = await patchFacultySemesterSubjects(
+        allocationUserId,
+        allocationSemester,
+        allocationSubjects
+      );
+      if (updated?.userId) {
+        setFaculty((prev) =>
+          prev.map((u) => (u.userId === updated.userId ? { ...u, ...updated } : u))
+        );
+      }
       flash(`Subjects (Sem ${allocationSemester}) saved for this faculty.`);
       await load();
     } catch (e) {
@@ -195,6 +285,12 @@ export function FacultyAccessPage() {
         e?.response?.data?.message || e.message || "Could not update faculty assignments."
       );
     }
+  }
+
+  function onRemoveAllocationSubject(subjectCode) {
+    const code = String(subjectCode || "").trim();
+    if (!code) return;
+    setAllocationSubjects((prev) => prev.filter((c) => String(c).trim() !== code));
   }
 
   async function onUploadSubjectCatalog(e) {
@@ -210,6 +306,7 @@ export function FacultyAccessPage() {
       setCatalogFile(null);
       flash("Semester subject catalog uploaded.");
       await load();
+      setAllocationSemester(Number(catalogSemester));
     } catch (e) {
       setErr(
         e?.response?.data?.message ||
@@ -391,10 +488,10 @@ export function FacultyAccessPage() {
                     onChange={setCatalogSemester}
                     options={Array.from({ length: 8 }, (_, i) => String(i + 1)).map((s) => ({
                       value: s,
-                      label: `Semester ${s}`,
+                      label: `Force Semester ${s}`,
                     }))}
                     disabled={catalogUploading}
-                    placeholder="Select Semester"
+                    placeholder="Force Semester 1-8"
                     searchPlaceholder="Type semester number…"
                   />
                 </label>
@@ -440,18 +537,26 @@ export function FacultyAccessPage() {
                   <SearchableSelect
                     value={String(allocationSemester)}
                     onChange={(v) => setAllocationSemester(Number(v))}
-                    options={(semesterCatalog.length
-                      ? semesterCatalog.map((s) => Number(s.semester))
-                      : [3, 5]
-                    ).map((s) => ({
-                      value: String(s),
-                      label: `Semester ${s}`,
-                    }))}
+                    options={semesterOptions}
                     disabled={!faculty.length}
                     placeholder="Select Semester"
                     searchPlaceholder="Type semester number…"
                   />
                 </label>
+                {selectedFaculty ? (
+                  <div className="faculty-allocation-hint" style={{ marginTop: "0.25rem" }}>
+                    <strong>Current semester-wise assignments:</strong>{" "}
+                    {selectedFacultySemesterAssignments.length === 0
+                      ? "None yet."
+                      : selectedFacultySemesterAssignments
+                          .map((row) =>
+                            `Sem ${row.semester}: ${
+                              row.subjectCodes.length ? row.subjectCodes.join(", ") : "—"
+                            }`
+                          )
+                          .join(" | ")}
+                  </div>
+                ) : null}
                 <label>
                   Subject Codes
                   <input
@@ -488,6 +593,32 @@ export function FacultyAccessPage() {
                     )}
                   </select>
                 </label>
+                <div className="faculty-allocation-hint" style={{ marginTop: "0.5rem" }}>
+                  <strong>Assigned for Semester {allocationSemester}:</strong>{" "}
+                  {allocationSubjects.length === 0 ? "None" : null}
+                  {allocationSubjects.length > 0 ? (
+                    <div
+                      className="inline-chip-list"
+                      style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}
+                    >
+                      {allocationSubjects.map((code) => (
+                        <span key={code} className="inline-chip">
+                          {code}
+                          <button
+                            type="button"
+                            className="btn-muted"
+                            onClick={() => onRemoveAllocationSubject(code)}
+                            title={`Remove ${code}`}
+                            aria-label={`Remove ${code}`}
+                            style={{ marginLeft: "0.5rem", padding: "0.05rem 0.35rem" }}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
                 <button
                   type="submit"
                   className="btn-primary-sm"

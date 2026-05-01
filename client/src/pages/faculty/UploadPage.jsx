@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { api } from "../../api/index.js";
 import {
   deleteUploadData,
+  downloadUploadTemplateFile,
   downloadOriginalUploadFile,
   fetchMyUploads,
   fetchUploadRecords,
@@ -39,6 +40,26 @@ function displayCell(v) {
 export function UploadPage() {
   const { user } = useAuth();
   const classes = user?.assignedClasses ?? [];
+  const semesterClassOptions = useMemo(
+    () =>
+      Array.from({ length: 8 }, (_, i) => i + 1).map((sem) => ({
+        value: `Semester ${sem}`,
+        label: `Semester ${sem}`,
+      })),
+    []
+  );
+  const classLabelOptions = useMemo(() => {
+    const map = new Map();
+    for (const c of classes) {
+      const value = String(c || "").trim();
+      if (!value) continue;
+      map.set(value, { value, label: value });
+    }
+    for (const option of semesterClassOptions) {
+      map.set(option.value, option);
+    }
+    return [...map.values()];
+  }, [classes, semesterClassOptions]);
   const STORAGE_KEY = "faculty_last_upload_id";
 
   const [classLabel, setClassLabel] = useState("");
@@ -148,6 +169,28 @@ export function UploadPage() {
     }
   }
 
+  async function onDownloadTemplate() {
+    try {
+      const { blob, headers } = await downloadUploadTemplateFile();
+      const disposition = String(headers?.["content-disposition"] || "");
+      const m = disposition.match(/filename="?([^"]+)"?/i);
+      const fallback = "marks-upload-template.xlsx";
+      const filename = (m?.[1] || fallback).replace(/[\\/:*?"<>|]/g, "_");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      const msg =
+        e?.response?.data?.message || e?.message || "Could not download upload template.";
+      setBanner({ type: "error", text: msg });
+    }
+  }
+
   async function onSelectUpload(uploadId) {
     if (!uploadId) return;
     setBusy(true);
@@ -204,7 +247,7 @@ export function UploadPage() {
           <SearchableSelect
             value={classLabel}
             onChange={setClassLabel}
-            options={classes.map((c) => ({ value: c, label: c }))}
+            options={classLabelOptions}
             disabled={busy}
             placeholder="Derive from Sheet / Default"
             searchPlaceholder="Search class label…"
@@ -257,6 +300,11 @@ export function UploadPage() {
         <input {...getInputProps()} />
         <strong>Drag &amp; Drop a .xlsx File Here</strong>
         <p>Or Click to Browse. Only .xlsx Is Accepted.</p>
+      </div>
+      <div style={{ marginTop: "0.75rem" }}>
+        <button type="button" className="btn-png" onClick={onDownloadTemplate}>
+          Download Upload Template
+        </button>
       </div>
 
       {busy ? <p className="sub">Processing…</p> : null}

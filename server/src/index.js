@@ -9,6 +9,7 @@ import analyticsRoutes from "./routes/analyticsRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import exportRoutes from "./routes/exportRoutes.js";
 import facultyRoutes from "./routes/facultyRoutes.js";
+import subjectsRoutes from "./routes/subjectsRoutes.js";
 
 const app = express();
 const port = process.env.PORT ?? 3000;
@@ -27,6 +28,7 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/export", exportRoutes);
 app.use("/api/faculty", facultyRoutes);
+app.use("/api/subjects", subjectsRoutes);
 
 // Global error handler (must be after routes; 4-arg handler)
 app.use((err, req, res, next) => {

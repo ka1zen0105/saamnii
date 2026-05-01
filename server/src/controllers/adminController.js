@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import fs from "node:fs";
 import { Student } from "../models/Student.js";
 import { Upload } from "../models/Upload.js";
+import { Subject } from "../models/Subject.js";
 import { User } from "../models/User.js";
 import { Settings } from "../models/Settings.js";
 import { SchoolClass } from "../models/SchoolClass.js";
@@ -46,7 +47,7 @@ function normalizeCatalogRows(rows) {
   const bySem = new Map();
   for (const row of rows) {
     const sem = Number(row?.semester);
-    const code = trim(row?.code).toUpperCase();
+    const code = trim(row?.code);
     const name = trim(row?.name);
     if (!Number.isFinite(sem) || !code || !name) continue;
     if (!bySem.has(sem)) bySem.set(sem, new Map());
@@ -63,31 +64,144 @@ function normalizeCatalogRows(rows) {
     .filter((s) => s.subjects.length > 0);
 }
 
+function normalizeFieldKey(key) {
+  return String(key ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function pickRowValue(row, aliases) {
+  const obj = row && typeof row === "object" ? row : {};
+  const entries = Object.entries(obj);
+  const aliasSet = new Set((aliases || []).map((a) => normalizeFieldKey(a)));
+  for (const [k, v] of entries) {
+    if (aliasSet.has(normalizeFieldKey(k))) return v;
+  }
+  return "";
+}
+
+function detectSemesterFromText(value) {
+  const s = String(value ?? "");
+  const m = s.match(/semester\s*([1-8])/i);
+  if (!m) return undefined;
+  const sem = Number(m[1]);
+  return Number.isFinite(sem) ? sem : undefined;
+}
+
+function normalizeStoredCatalog(semesters) {
+  if (!Array.isArray(semesters)) return [];
+  const flat = [];
+  for (const semRow of semesters) {
+    const semester = Number(semRow?.semester);
+    if (!Number.isFinite(semester)) continue;
+    const subjects = Array.isArray(semRow?.subjects) ? semRow.subjects : [];
+    for (const sub of subjects) {
+      flat.push({
+        semester,
+        code: trim(sub?.code),
+        name: trim(sub?.name),
+      });
+    }
+  }
+  return normalizeCatalogRows(flat);
+}
+
+function mergeSemesterCatalog(existingRows, incomingRows) {
+  const normalizedExisting = normalizeStoredCatalog(existingRows);
+  const normalizedIncoming = normalizeStoredCatalog(incomingRows);
+  const bySemester = new Map(normalizedExisting.map((row) => [row.semester, row.subjects]));
+  for (const row of normalizedIncoming) {
+    bySemester.set(row.semester, row.subjects);
+  }
+  return [...bySemester.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([semester, subjects]) => ({ semester, subjects }));
+}
+
 function parseSemesterCatalogWorkbook(buffer, forcedSemester) {
   const wb = XLSX.read(buffer, { type: "buffer" });
   const firstSheet = wb.SheetNames[0];
   if (!firstSheet) return [];
   const ws = wb.Sheets[firstSheet];
-  const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
-  const mapped = rows.map((r) => {
-    const semester =
-      forcedSemester ?? r.Semester ?? r.semester ?? r.SEMESTER ?? "";
-    const code =
-      r["Subject Code"] ??
-      r["subject code"] ??
-      r.subjectCode ??
-      r["Code"] ??
-      r.code ??
-      "";
-    const name =
-      r["Subject Name"] ??
-      r["subject name"] ??
-      r.subjectName ??
-      r["Name"] ??
-      r.name ??
-      "";
-    return { semester, code, name };
+  const matrix = XLSX.utils.sheet_to_json(ws, {
+    header: 1,
+    defval: "",
+    raw: false,
   });
+  let inferredSemester = forcedSemester;
+  if (inferredSemester == null) {
+    for (const row of matrix) {
+      if (!Array.isArray(row)) continue;
+      for (const cell of row) {
+        const detected = detectSemesterFromText(cell);
+        if (detected != null) {
+          inferredSemester = detected;
+          break;
+        }
+      }
+      if (inferredSemester != null) break;
+    }
+  }
+
+  let headerIndex = -1;
+  let codeCol = -1;
+  let nameCol = -1;
+  for (let r = 0; r < matrix.length; r += 1) {
+    const row = Array.isArray(matrix[r]) ? matrix[r] : [];
+    for (let c = 0; c < row.length; c += 1) {
+      const v = normalizeFieldKey(row[c]);
+      if (codeCol === -1 && (v === "subjectcode" || v === "code")) codeCol = c;
+      if (nameCol === -1 && (v === "subjectname" || v === "name")) nameCol = c;
+    }
+    if (codeCol !== -1 && nameCol !== -1) {
+      headerIndex = r;
+      break;
+    }
+  }
+
+  const mapped = [];
+  if (headerIndex !== -1) {
+    for (let r = headerIndex + 1; r < matrix.length; r += 1) {
+      const row = Array.isArray(matrix[r]) ? matrix[r] : [];
+      const code = String(row[codeCol] ?? "").trim();
+      const name = String(row[nameCol] ?? "").trim();
+      if (!code && !name) continue;
+      mapped.push({
+        semester: inferredSemester ?? "",
+        code,
+        name,
+      });
+    }
+  } else {
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+    for (const r of rows) {
+      mapped.push({
+        semester:
+          forcedSemester ??
+          pickRowValue(r, ["Semester", "Sem", "SEMESTER", "SEM"]) ??
+          "",
+        code:
+          pickRowValue(r, [
+            "Subject Code",
+            "subject code",
+            "SubjectCode",
+            "subjectCode",
+            "Code",
+            "code",
+          ]) ?? "",
+        name:
+          pickRowValue(r, [
+            "Subject Name",
+            "subject name",
+            "SubjectName",
+            "subjectName",
+            "Name",
+            "name",
+          ]) ?? "",
+      });
+    }
+  }
   return normalizeCatalogRows(mapped);
 }
 
@@ -704,16 +818,44 @@ export async function uploadSemesterSubjectCatalog(req, res, next) {
       });
     }
 
+    const currentSettings = await Settings.findById("app").lean();
+    const mergedCatalog = mergeSemesterCatalog(
+      currentSettings?.semesterSubjectCatalog || [],
+      parsed
+    );
+
     await Settings.findByIdAndUpdate(
       "app",
-      { semesterSubjectCatalog: parsed },
+      { semesterSubjectCatalog: mergedCatalog },
       { upsert: true, new: true }
     );
 
+    const bulkOps = [];
+    for (const semRow of mergedCatalog) {
+      const semester = Number(semRow?.semester);
+      const subjects = Array.isArray(semRow?.subjects) ? semRow.subjects : [];
+      for (const sub of subjects) {
+        const subject_code = String(sub?.code || "").trim();
+        const subject_name = String(sub?.name || "").trim();
+        if (!Number.isFinite(semester) || !subject_code || !subject_name) continue;
+        bulkOps.push({
+          updateOne: {
+            filter: { semester, subject_code },
+            update: { $set: { semester, subject_code, subject_name } },
+            upsert: true,
+          },
+        });
+      }
+    }
+    if (bulkOps.length) {
+      await Subject.bulkWrite(bulkOps, { ordered: false });
+    }
+
     return res.json({
       ok: true,
-      semesters: parsed,
-      message: "Semester subject catalog uploaded successfully.",
+      subjectsSaved: bulkOps.length,
+      semesters: mergedCatalog,
+      message: "Semester subject catalog updated successfully.",
     });
   } catch (err) {
     next(err);
@@ -766,7 +908,18 @@ export async function listFaculty(req, res, next) {
         "userId displayLabel email contact subjectCodes semesterSubjectAssignments assignedClasses"
       )
       .lean();
-    return res.json(users);
+    const counts = await Upload.aggregate([
+      { $group: { _id: "$facultyId", uploadCount: { $sum: 1 } } },
+    ]);
+    const countByFacultyId = new Map(
+      counts.map((row) => [String(row?._id || "").trim(), Number(row?.uploadCount || 0)])
+    );
+    return res.json(
+      users.map((u) => ({
+        ...u,
+        uploadCount: countByFacultyId.get(String(u?.userId || "").trim()) || 0,
+      }))
+    );
   } catch (err) {
     next(err);
   }
