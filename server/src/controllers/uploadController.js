@@ -1,4 +1,6 @@
 import * as XLSX from "xlsx";
+import fs from "node:fs";
+import path from "node:path";
 import mongoose from "mongoose";
 import { Student, Upload } from "../models/index.js";
 import {
@@ -391,55 +393,19 @@ function parseContineoRows(rows, { uploadId, bodyClassLabel, sheetName }) {
  */
 export async function downloadUploadTemplate(_req, res, next) {
   try {
-    const headers = [
-      "PRN",
-      "NAME",
-      "EMAIL",
-      "CONTACT",
-      "SEM",
-      "BRANCH",
-      "SGPA",
-      "CGPA",
-    ];
-    const subjectHeaders = [];
-    for (let i = 1; i <= 15; i += 1) {
-      subjectHeaders.push(
-        `S${i}_CD`,
-        `S${i}_NM`,
-        `S${i}_IA`,
-        `S${i}_IA2`,
-        `S${i}_MSE`,
-        `S${i}_ESE`,
-        `S${i}_TOT`,
-        `S${i}_GR`,
-        `S${i}_CR`,
-        `S${i}_R`
-      );
-    }
-
-    const ws = XLSX.utils.aoa_to_sheet([
-      [...headers, ...subjectHeaders],
-      [
-        "1234567890",
-        "Student Name",
-        "student@example.edu",
-        "9999999999",
-        3,
-        "ECS",
-        8.5,
-        8.2,
-        // Keep the second row minimal; faculty can paste their actual subject cells.
-      ],
-    ]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Template");
-    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    const bundledTemplatePath = path.resolve(
+      process.cwd(),
+      "template-files",
+      "marks-upload-template.xlsx"
     );
-    res.setHeader("Content-Disposition", 'attachment; filename="marks-upload-template.xlsx"');
-    return res.send(Buffer.from(buffer));
+    const templatePath = process.env.MARKS_UPLOAD_TEMPLATE_PATH || bundledTemplatePath;
+    if (!fs.existsSync(templatePath)) {
+      return res.status(404).json({
+        error: "Not Found",
+        message: "Upload template file not found on server.",
+      });
+    }
+    return res.download(templatePath, "marks-upload-template.xlsx");
   } catch (err) {
     next(err);
   }
