@@ -33,12 +33,6 @@ function formatInt(value) {
   return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(n);
 }
 
-function formatPct(value) {
-  const n = Number(value ?? 0);
-  if (!Number.isFinite(n)) return "0.0%";
-  return `${n.toFixed(1)}%`;
-}
-
 export function AdminDashboard() {
   const [dash, setDash] = useState(null);
   const [updates, setUpdates] = useState([]);
@@ -71,7 +65,6 @@ export function AdminDashboard() {
     load();
   }, [load]);
 
-  const stats = dash?.stats;
   const gradePie = facultyOPie.map((r) => ({
     name: r.facultyLabel || r.facultyId,
     percentage: Number(r.oPercentage || 0),
@@ -124,31 +117,6 @@ export function AdminDashboard() {
         <p className="sub">Loading…</p>
       ) : (
         <>
-          <div className="stat-grid">
-            <div className="stat-card">
-              <div className="label">Total students</div>
-              <div className="value">{formatInt(stats?.totalStudents)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="label">Record rows</div>
-              <div className="value">{formatInt(stats?.recordRows)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="label">Fail count</div>
-              <div className="value">{formatInt(stats?.failCount)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="label">Pass %</div>
-              <div className="value">{formatPct(stats?.passPct)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="label">Avg SGPA</div>
-              <div className="value">
-                {stats?.avgSgpa != null ? Number(stats.avgSgpa).toFixed(2) : "—"}
-              </div>
-            </div>
-          </div>
-
           <div className="admin-insights">
             <strong>Quick insights</strong>
             <div>
