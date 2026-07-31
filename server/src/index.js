@@ -12,7 +12,6 @@ import facultyRoutes from "./routes/facultyRoutes.js";
 import subjectsRoutes from "./routes/subjectsRoutes.js";
 
 const app = express();
-const port = process.env.PORT ?? 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -72,19 +71,44 @@ app.use((err, req, res, next) => {
 async function bootstrap() {
   const mongoUri = process.env.MONGO_URI;
   if (!mongoUri) {
-    console.error("MONGO_URI is required in .env");
+    console.error("MONGO_URI is required (set it in Render Environment).");
     process.exit(1);
   }
 
-  await mongoose.connect(mongoUri);
+  // Render injects PORT — do not hardcode 5050 in the Render dashboard.
+  const listenPort = Number(process.env.PORT) || 3000;
+  let mongoHost = "(unparsed)";
+  try {
+    mongoHost = new URL(mongoUri.replace(/^mongodb(\+srv)?:\/\//, "http://")).host;
+  } catch {
+    /* ignore */
+  }
 
-  app.listen(port, () => {
-    console.log(`Server listening on http://localhost:${port}`);
-    console.log("MongoDB connected");
+  console.log(`Starting API (PORT=${listenPort})…`);
+  console.log(`Connecting to MongoDB host: ${mongoHost}`);
+  await mongoose.connect(mongoUri, {
+    serverSelectionTimeoutMS: 15_000,
+  });
+  console.log("MongoDB connected");
+
+  await new Promise((resolve, reject) => {
+    const server = app.listen(listenPort, "0.0.0.0", () => {
+      console.log(`Server listening on 0.0.0.0:${listenPort}`);
+      resolve(server);
+    });
+    server.on("error", reject);
   });
 }
 
 bootstrap().catch((err) => {
-  console.error(err);
+  console.error("Failed to start server:", err?.message || err);
+  if (
+    err?.name === "MongooseServerSelectionError" ||
+    /whitelist|ECONNREFUSED|querySrv|SSL|authentication/i.test(String(err?.message || ""))
+  ) {
+    console.error(
+      "MongoDB connection failed. On Render: set MONGO_URI to the new Atlas URI, allow 0.0.0.0/0 in Atlas Network Access, and do not override PORT."
+    );
+  }
   process.exit(1);
 });
