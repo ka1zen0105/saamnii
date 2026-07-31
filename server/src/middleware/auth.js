@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { User } from "../models/User.js";
 
 export function getBearerToken(req) {
   const raw = req.headers.authorization;
@@ -7,11 +8,36 @@ export function getBearerToken(req) {
   return match ? match[1].trim() : null;
 }
 
+function mergedSubjectCodes(doc) {
+  const flat = Array.isArray(doc?.subjectCodes) ? doc.subjectCodes : [];
+  const bySem = Array.isArray(doc?.semesterSubjectAssignments)
+    ? doc.semesterSubjectAssignments
+    : [];
+  const out = [];
+  const seen = new Set();
+  for (const code of [
+    ...flat,
+    ...bySem.flatMap((row) =>
+      Array.isArray(row?.subjectCodes) ? row.subjectCodes : []
+    ),
+  ]) {
+    const c = String(code ?? "").trim();
+    if (!c) continue;
+    const key = c.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
 /**
  * Verifies Bearer JWT and attaches `req.user`:
  * `{ userId, role, subjectCodes, assignedClasses }`.
+ * Faculty subject/class scope is refreshed from MongoDB so admin
+ * Faculty Access changes apply without forcing a re-login.
  */
-export function verifyToken(req, res, next) {
+export async function verifyToken(req, res, next) {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
     console.error("[auth] JWT_SECRET is not configured");
@@ -48,8 +74,9 @@ export function verifyToken(req, res, next) {
       });
     }
 
+    const trimmedId = userId.trim();
     req.user = {
-      userId: userId.trim(),
+      userId: trimmedId,
       role,
       subjectCodes: Array.isArray(payload.subjectCodes) ? payload.subjectCodes : [],
       assignedClasses: Array.isArray(payload.assignedClasses)
@@ -57,16 +84,40 @@ export function verifyToken(req, res, next) {
         : [],
     };
 
+    if (role === "faculty") {
+      const idLower = trimmedId.toLowerCase();
+      const doc = await User.findOne({
+        role: "faculty",
+        $or: [
+          { userId: trimmedId },
+          { email: idLower },
+          { email: trimmedId },
+        ],
+      })
+        .select("subjectCodes semesterSubjectAssignments assignedClasses")
+        .lean();
+
+      if (doc) {
+        req.user.subjectCodes = mergedSubjectCodes(doc);
+        req.user.assignedClasses = Array.isArray(doc.assignedClasses)
+          ? doc.assignedClasses
+          : [];
+      }
+    }
+
     next();
   } catch (err) {
-    const msg =
-      err?.name === "TokenExpiredError"
-        ? "Token expired."
-        : "Invalid or malformed token.";
-    return res.status(401).json({
-      error: "Unauthorized",
-      message: msg,
-    });
+    if (err?.name === "TokenExpiredError" || err?.name === "JsonWebTokenError") {
+      const msg =
+        err?.name === "TokenExpiredError"
+          ? "Token expired."
+          : "Invalid or malformed token.";
+      return res.status(401).json({
+        error: "Unauthorized",
+        message: msg,
+      });
+    }
+    next(err);
   }
 }
 

@@ -181,8 +181,9 @@ export function AnalyticsPage() {
               No assigned-subject data for this upload
             </p>
             <p style={{color:"#6b7280",fontSize:"0.9rem"}}>
-              This upload exists, but none of its subject codes match your assigned subjects.
-              Ask admin to update your subject allocation for this semester in Faculty Access.
+              None of this upload’s subject codes match your assigned subjects.
+              In Admin → Faculty Access, assign the same codes that are in the Excel
+              for this semester, then refresh.
             </p>
           </div>
         ) : (
